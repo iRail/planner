@@ -43,23 +43,25 @@ after `npm ci`.
 import { createPlanner } from "@irail/planner";
 
 const planner = createPlanner({
-  dataUrl: "https://publisher.example/manifest.jsonld",
+  dataUrl: "https://irail.github.io/iRail-cdn/manifest.jsonld",
   cacheBytes: 64 * 1024 * 1024, // optional; default 64 MiB
 });
 const [source] = await planner.init();
 
-// Stop IDs are the publisher's absolute IRIs. Indices belong to this release.
-const originIdx = source.stops.id.indexOf(
-  "https://publisher.example/stops/gent",
-);
-const destinationIdx = source.stops.id.indexOf(
-  "https://publisher.example/stops/liege",
-);
+// Stops are named by the publisher's absolute IRIs, for iRail the station IRIs.
+// Indices belong to this release.
+const stop = (iri) => source.stops.id.indexOf(iri);
 const result = await planner.plan(
   {
-    origin: { sourceId: source.id, stopIdx: originIdx },
-    destination: { sourceId: source.id, stopIdx: destinationIdx },
-    departureAfter: Date.parse("2026-11-08T08:00:00Z") / 1000,
+    origin: {
+      sourceId: source.id,
+      stopIdx: stop("http://irail.be/stations/NMBS/008892007"), // Gent-Sint-Pieters
+    },
+    destination: {
+      sourceId: source.id,
+      stopIdx: stop("http://irail.be/stations/NMBS/008841004"), // Liège-Guillemins
+    },
+    departureAfter: Date.parse("2026-11-09T08:00:00Z") / 1000,
     maxWalkMeters: 1000,
     windowMode: "adaptive",
   },
@@ -76,15 +78,12 @@ for (const journey of result.options) {
 }
 ```
 
-Use stop IRIs that exist in your publisher's timetable and a departure inside its
+Use IRIs that exist in your publisher's timetable and a departure inside its
 coverage. All API times are **UTC epoch seconds**, not JavaScript milliseconds.
 Either endpoint can instead be `{ lon, lat }`; walking access and egress are
-included without snapping the point to a single stop.
-
-For a runnable example, use the iRail CDN's live NMBS/SNCB timetable,
-`https://irail.github.io/iRail-cdn/manifest.jsonld`, with the stop IRIs
-`https://irail.be/id/be.sncb/stops/S8892007` (Gent-Sint-Pieters) and
-`https://irail.be/id/be.sncb/stops/S8841004` (Liège-Guillemins).
+included without snapping the point to a single stop. To work with station names
+instead of IRIs, use [the iRail calls](#irail-api-calls): `stations()`,
+`liveboard()` and `connections()` take names in any language.
 
 ## API
 

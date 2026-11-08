@@ -273,8 +273,8 @@ const [source] = await planner.init();
 const stop = (iri) => source.stops.id.indexOf(iri);
 const result = await planner.plan({
   // Gent-Sint-Pieters to Liège-Guillemins
-  origin: { sourceId: source.id, stopIdx: stop('https://irail.be/id/be.sncb/stops/S8892007') },
-  destination: { sourceId: source.id, stopIdx: stop('https://irail.be/id/be.sncb/stops/S8841004') },
+  origin: { sourceId: source.id, stopIdx: stop('http://irail.be/stations/NMBS/008892007') },
+  destination: { sourceId: source.id, stopIdx: stop('http://irail.be/stations/NMBS/008841004') },
   departureAfter: Math.floor(Date.now() / 1000),
   maxWalkMeters: 1000,
 });

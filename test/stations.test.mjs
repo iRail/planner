@@ -7,6 +7,7 @@ import {
   loadStationRows,
   normalizeLanguage,
   stationByName,
+  stationKey,
   stationLabel,
   stationQueryRegex,
 } from "../playground/irail/stations.mjs";
@@ -128,6 +129,28 @@ test("stationByName finds an exact label in any language", () => {
   assert.equal(stationByName(stations, "brüssel-süd (midi)")?.key, "8814001");
   assert.equal(stationByName(stations, "Liege-Guillemins")?.key, "8841004");
   assert.equal(stationByName(stations, "Nowhere"), null);
+});
+
+test("stops named by iRail station IRIs work like the S-prefixed stop IRIs", () => {
+  // The iRail CDN is moving to iRail's station IRIs for station-level stops.
+  const stationIris = buildStations({
+    rows,
+    ids: [
+      "http://irail.be/stations/NMBS/008892106",
+      "http://irail.be/stations/NMBS/008814001",
+      "http://irail.be/stations/NMBS/008892007",
+      "https://irail.be/id/be.sncb/stops/8892007_1",
+      "http://irail.be/stations/NMBS/008841004",
+    ],
+    names: ["Gentbrugge", "Bruxelles-Midi", "Gand-Saint-Pierre", "Gand-Saint-Pierre", "Liège-Guillemins"],
+    searchable: [0, 1, 2, 4],
+  });
+  assert.deepEqual(label(stationIris), ["8814001", "8892007", "8841004", "8892106"]);
+  const ghent = stationIris.find((s) => s.key === "8892007");
+  assert.equal(ghent.stopIdx, 2);
+  assert.deepEqual(ghent.stopIdxs, [2, 3]); // the station and its platform
+  assert.equal(findStations(stationIris, "ghent")[0].key, "8892007");
+  assert.equal(stationKey("http://irail.be/stations/NMBS/008892007"), "8892007");
 });
 
 test("without the extension table, stops are labelled by their own names", () => {
