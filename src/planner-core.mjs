@@ -1,0 +1,433 @@
+import { networkColor } from "./planner-identifiers.mjs";
+import { readConnectionBatches, PageCache, timeAt } from "./planner-data.mjs";
+import { buildNetwork, WALK_SPEED } from "./planner-network.mjs";
+import { createProfileSearch } from "./planner-profile.mjs";
+import { createIsochroneSearch } from "./planner-isochrone.mjs";
+import { buildRegionIndex, createRegionScan } from "./planner-regional.mjs";
+import { createEarliestSearch } from "./planner-earliest.mjs";
+import { createJourneyEndpoints } from "./planner-endpoints.mjs";
+import {
+  loadLCTimetable,
+  connectionPages,
+  validateSchema,
+} from "./lc-timetable.mjs";
+
+export function createPlanner(
+  { tableFromIPC, RecordBatchReader },
+  { loadPage, cacheBytes, fetch: fetcher = globalThis.fetch } = {},
+) {
+  const cache = new PageCache(cacheBytes);
+  let previousNetwork;
+  let previousSources;
+  let previousWalk;
+  async function fetchResponse(url) {
+    const response = await fetcher(url);
+    if (!response.ok)
+      throw new Error(`Could not fetch ${url}: HTTP ${response.status}`);
+    return response;
+  }
+
+  async function loadSmallTable(url, expected) {
+    const response = await fetchResponse(url);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (String.fromCharCode(...bytes.subarray(0, 6)) !== "ARROW1")
+      throw new Error(`Expected an Arrow IPC file: ${url}`);
+    const table = tableFromIPC(bytes);
+    if (expected)
+      validateSchema(table.schema, expected.dataset, expected.releaseId);
+    return table;
+  }
+
+  // A direct manifest URL or a directory containing manifest.jsonld. An
+  // optional sources.json remains an application-level multi-feed index.
+  async function discoverSources(dataUrl) {
+    const url = new URL(dataUrl);
+    if (!["http:", "https:"].includes(url.protocol))
+      throw new Error("The data URL must use HTTP or HTTPS");
+    if (!url.pathname.endsWith("/"))
+      return [{ id: "default", name: "Timetable", manifestUrl: url.href }];
+    const response = await fetcher(new URL("sources.json", url).href);
+    if (response.ok) {
+      const data = await response.json();
+      return data.sources.map((source) => ({
+        id: source.id,
+        name: source.name || source.id,
+        color: source.color,
+        manifestUrl: new URL(source.manifest, response.url || url).href,
+      }));
+    }
+    if (response.status !== 404)
+      throw new Error(`Could not discover sources: HTTP ${response.status}`);
+    return [
+      {
+        id: "default",
+        name: "Timetable",
+        manifestUrl: new URL("manifest.jsonld", url).href,
+      },
+    ];
+  }
+
+  async function loadSource(descriptor) {
+    const response = await fetchResponse(descriptor.manifestUrl);
+    const manifest = await response.json();
+    const source = await loadLCTimetable(
+      manifest,
+      response.url || descriptor.manifestUrl,
+      loadSmallTable,
+    );
+    return {
+      ...source,
+      id: descriptor.id,
+      name: manifest.name || descriptor.name,
+      color: networkColor(descriptor.id, manifest.color || descriptor.color),
+    };
+  }
+
+  async function readPage(job) {
+    const request = {
+      url: job.url,
+      epochSeconds: job.epochSeconds,
+      releaseId: job.source.manifest.releaseId,
+      allowNotFound: job.allowNotFound,
+      region: job.region,
+      from: -Infinity,
+      to: Infinity,
+    };
+    const cacheKey = (url) =>
+      JSON.stringify([
+        job.source.manifest.releaseId,
+        url,
+        request.epochSeconds,
+        request.from,
+        request.to,
+      ]);
+    const key = cacheKey(request.url);
+    let batches = cache.get(key);
+    if (!batches) {
+      batches = await (loadPage
+        ? loadPage(request)
+        : readConnectionBatches(RecordBatchReader, request, fetcher));
+      cache.set(key, batches);
+      if (batches.page?.url && batches.page.url !== request.url)
+        cache.set(cacheKey(batches.page.url), batches);
+    }
+    return Object.assign(
+      batches.map((batch) => ({ ...batch, source: job.source })),
+      { page: batches.page },
+    );
+  }
+
+  function ensureNetwork(sources, maxWalkMeters) {
+    if (
+      !previousNetwork ||
+      previousWalk !== maxWalkMeters ||
+      sources.length !== previousSources.length ||
+      sources.some((s, i) => s !== previousSources[i])
+    ) {
+      previousNetwork = buildNetwork(sources, maxWalkMeters);
+      previousSources = sources.slice();
+      previousWalk = maxWalkMeters;
+    }
+    return previousNetwork;
+  }
+
+  async function planJourneys({
+    sources,
+    origin,
+    destination,
+    departureAfter,
+    maxWalkMeters,
+    onProgress,
+    windowMode = "adaptive",
+  }) {
+    if (
+      !Number.isFinite(departureAfter) ||
+      !Number.isFinite(maxWalkMeters) ||
+      maxWalkMeters < 0 ||
+      maxWalkMeters > 5000
+    )
+      throw new Error("Invalid departure time or walking limit (0–5000 m)");
+    if (windowMode !== "adaptive" && windowMode !== "full")
+      throw new Error("Unknown journey window mode");
+    const maximum = departureAfter + 86400;
+    let to = maximum;
+    const network = ensureNetwork(sources, maxWalkMeters);
+    const endpoints = createJourneyEndpoints(
+      network,
+      origin,
+      destination,
+      maxWalkMeters,
+    );
+    const fromStop = endpoints.origin;
+    const toStop = endpoints.destination;
+    if (endpoints.same)
+      return {
+        found: true,
+        options: [
+          {
+            departure: departureAfter,
+            arrival: departureAfter,
+            transfers: 0,
+            legs: [],
+          },
+        ],
+        totalOptions: 1,
+        scanned: 0,
+        window: {
+          mode: windowMode,
+          from: departureAfter,
+          to: windowMode === "full" ? maximum : departureAfter + 1,
+          earliestArrival: windowMode === "full" ? null : departureAfter,
+        },
+        diagnostics: {
+          pages: 0,
+          cacheBytes: cache.bytes,
+          forwardMs: 0,
+          backwardMs: 0,
+        },
+      };
+    onProgress?.({ phase: "loading", completed: 0, total: 0 });
+    network.regionIndex = buildRegionIndex(
+      network,
+      await Promise.all(
+        network.sources.map(async (source) => [
+          source,
+          await connectionPages(source, departureAfter, maximum, readPage),
+        ]),
+      ),
+    );
+    // Keep query-owned page views across both passes even if the LRU evicts
+    // them. Indexed pages have the same cache key regardless of the horizon.
+    const queryPages = new Map();
+    const load = (job) => {
+      if (!queryPages.has(job.url))
+        queryPages.set(job.url, readPage(job, departureAfter, maximum));
+      return queryPages.get(job.url);
+    };
+    let forward = { scanned: 0, pages: 0, regions: 0, loadMs: 0 };
+    let earliestArrival;
+    let earliestStops;
+    let earliestRegions;
+    const forwardStart = performance.now();
+    if (windowMode === "adaptive") {
+      onProgress?.({ phase: "earliest" });
+      const scan = createRegionScan(
+        network.regionIndex,
+        departureAfter,
+        maximum,
+        false,
+        load,
+        (progress) => onProgress?.({ phase: "earliest", ...progress }),
+      );
+      const search = createEarliestSearch(
+        network,
+        fromStop,
+        toStop,
+        departureAfter,
+        maximum,
+        scan.activate,
+        endpoints,
+      );
+      forward = await scan.scan(search.visit, { stopAt: () => search.arrival });
+      earliestArrival = search.arrival;
+      if (!Number.isFinite(earliestArrival))
+        return {
+          found: false,
+          options: [],
+          totalOptions: 0,
+          scanned: forward.scanned,
+          window: {
+            mode: windowMode,
+            from: departureAfter,
+            to: maximum,
+            earliestArrival: null,
+          },
+          diagnostics: {
+            forward,
+            pages: queryPages.size,
+            cacheBytes: cache.bytes,
+            forwardMs: performance.now() - forwardStart,
+            backwardMs: 0,
+          },
+        };
+      // One second keeps departures at `from` available for zero-duration
+      // rides; positive-duration journeys use exactly twice elapsed time.
+      to = Math.min(
+        maximum,
+        departureAfter + Math.max(1, 2 * (earliestArrival - departureAfter)),
+      );
+      // The forward pass certifies reachability only before its earliest
+      // destination arrival. Cap provisional/unreached bounds at that time:
+      // later alternatives may legitimately enter previously unseen regions.
+      earliestStops = Float64Array.from(scan.bounds, (time) =>
+        Math.min(time, earliestArrival),
+      );
+      earliestRegions = new Map(
+        [...network.regionIndex.forward.keys()].map((region) => [
+          region,
+          Math.min(scan.regionBounds.get(region) ?? Infinity, earliestArrival),
+        ]),
+      );
+    }
+    const forwardMs = performance.now() - forwardStart;
+    onProgress?.({ phase: "scanning" });
+    const backwardStart = performance.now();
+    const scan = createRegionScan(
+      network.regionIndex,
+      departureAfter,
+      to,
+      true,
+      load,
+      (progress) => onProgress?.({ phase: "scanning", ...progress }),
+      earliestRegions,
+    );
+    const walkedLatest = new Float64Array(network.stopCount).fill(-Infinity);
+    function reach(stop, latest, canWalk) {
+      scan.activate(stop, latest);
+      // A root's earlier profiles cannot extend any walking activation.
+      // Track boardable bounds separately from through-ride bounds.
+      if (!canWalk || latest <= walkedLatest[stop]) return;
+      walkedLatest[stop] = latest;
+      const neighbors = network.neighbors(stop);
+      for (let i = 0; i < neighbors.stops.length; i += 1)
+        scan.activate(
+          neighbors.stops[i],
+          latest - neighbors.meters[i] / WALK_SPEED,
+        );
+    }
+    // Walking egress is one leg. Subsequent walking expansions start only
+    // at boardable ride profiles, so walks cannot chain across regions.
+    for (const [stop, meters] of endpoints.egress)
+      scan.activate(stop, to - meters / WALK_SPEED);
+    const seenEdges = new Set();
+    let edges = [];
+    let lastFlush = performance.now();
+    function flushEdges() {
+      if (!edges.length) return;
+      onProgress?.({ phase: "profiles", edges });
+      edges = [];
+      lastFlush = performance.now();
+    }
+    function onConnection(board, alight, kind) {
+      if (!onProgress || board === alight) return;
+      const key = `${board}/${alight}/${kind}`;
+      if (seenEdges.has(key)) return;
+      seenEdges.add(key);
+      const start = endpoints.coordinates(board);
+      const end = endpoints.coordinates(alight);
+      if (!start || !end) return;
+      edges.push({
+        from: [start.lon, start.lat],
+        to: [end.lon, end.lat],
+        kind: kind === 1 ? "walk" : "ride",
+      });
+      if (edges.length >= 256 || performance.now() - lastFlush >= 40)
+        flushEdges();
+    }
+    const search = createProfileSearch(
+      network,
+      fromStop,
+      toStop,
+      departureAfter,
+      to,
+      reach,
+      { ...endpoints, onConnection },
+    );
+    const backward = await scan.scan(search.visit, {
+      accept: (batch, row, dep) =>
+        (earliestStops === undefined ||
+          dep >=
+            earliestStops[
+              network.root[batch.source.stopOffset + batch.dS[row]]
+            ]) &&
+        timeAt(batch, "arr", row) <=
+          scan.bounds[network.root[batch.source.stopOffset + batch.aS[row]]],
+    });
+    const result = search.finish(backward.scanned);
+    flushEdges();
+    result.scanned += forward.scanned;
+    result.window = {
+      mode: windowMode,
+      from: departureAfter,
+      to,
+      earliestArrival: earliestArrival ?? null,
+    };
+    result.diagnostics.forward = forward;
+    result.diagnostics.backward = backward;
+    result.diagnostics.forwardMs = forwardMs;
+    result.diagnostics.backwardMs = performance.now() - backwardStart;
+    result.diagnostics.cacheBytes = cache.bytes;
+    result.diagnostics.pages = queryPages.size;
+    return result;
+  }
+
+  /**
+   * One-to-many earliest arrival from an arbitrary clicked point, not a
+   * stop: how much of the selected networks is reachable within
+   * `maxDurationSeconds`, for isochrone rendering. Walking access to the
+   * origin uses the same `maxWalkMeters` setting as journey planning.
+   */
+  async function planIsochrone({
+    sources,
+    origin,
+    departureAfter,
+    maxWalkMeters,
+    maxDurationSeconds,
+    onProgress,
+  }) {
+    if (
+      !Number.isFinite(departureAfter) ||
+      !Number.isFinite(maxWalkMeters) ||
+      maxWalkMeters < 0 ||
+      maxWalkMeters > 5000
+    )
+      throw new Error("Invalid departure time or walking limit (0–5000 m)");
+    if (
+      !Number.isFinite(maxDurationSeconds) ||
+      maxDurationSeconds < 60 ||
+      maxDurationSeconds > 3 * 3600
+    )
+      throw new Error("Invalid isochrone duration (1–180 minutes)");
+    const to = departureAfter + maxDurationSeconds;
+    const network = ensureNetwork(sources, maxWalkMeters);
+    network.regionIndex = buildRegionIndex(
+      network,
+      await Promise.all(
+        network.sources.map(async (source) => [
+          source,
+          await connectionPages(source, departureAfter, to, readPage),
+        ]),
+      ),
+    );
+    const scan = createRegionScan(
+      network.regionIndex,
+      departureAfter,
+      to,
+      false,
+      (job) => readPage(job, departureAfter, to),
+      onProgress,
+    );
+    const search = createIsochroneSearch(
+      network,
+      origin,
+      departureAfter,
+      to,
+      maxWalkMeters,
+      scan.activate,
+    );
+    onProgress?.({ phase: "scanning" });
+    const stats = await scan.scan(search.visit);
+    const result = search.finish(stats.scanned);
+    result.pages = stats.pages;
+    result.diagnostics = stats;
+    return result;
+  }
+
+  return {
+    discoverSources,
+    loadSource,
+    loadSmallTable,
+    planJourneys,
+    planIsochrone,
+  };
+}

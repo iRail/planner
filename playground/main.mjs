@@ -1,0 +1,1156 @@
+import { dataUrl } from "./config.mjs";
+import { resolveDataUrl } from "../src/planner-config.mjs";
+import {
+  PlannerClient,
+  createPlannerWorker,
+  sampleIsoSurface,
+  walkingRing,
+  WALK_SPEED,
+} from "../src/browser.mjs";
+let planner;
+
+const state = {
+  // Stop-search metadata only; connections and Arrow tables stay in the worker.
+  sources: [],
+  origin: null, // { sourceId, stopIdx } | null
+  destination: null,
+};
+
+const el = (id) => document.getElementById(id);
+const statusEl = el("status");
+let originPicker, destinationPicker;
+let mapEndpoint = "origin";
+let journeyRunning = false;
+let mapJourneyPending = false;
+let journeyRevision = 0;
+const planButton = el("plan-button");
+
+function setStatus(message, isError = false) {
+  statusEl.textContent = message;
+  statusEl.classList.toggle("error", isError);
+}
+
+function renderSourceCheckboxes(containerId = "source-list") {
+  const container = el(containerId);
+  container.innerHTML = "";
+  for (const source of state.sources) {
+    const label = document.createElement("label");
+    label.className = "source-toggle";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = true;
+    checkbox.dataset.sourceId = source.id;
+    label.appendChild(checkbox);
+    const text = document.createElement("span");
+    text.textContent = source.name;
+    if (containerId === "iso-source-list") {
+      const dot = document.createElement("span");
+      dot.className = "network-dot";
+      dot.style.backgroundColor = source.color;
+      dot.setAttribute("aria-hidden", "true");
+      label.appendChild(dot);
+    }
+    label.appendChild(text);
+    const count = document.createElement("span");
+    count.className = "source-count";
+    count.textContent = `(${source.manifest.counts.stops.toLocaleString()} stops)`;
+    label.appendChild(count);
+    container.appendChild(label);
+  }
+}
+
+function activeSources(containerId = "source-list") {
+  const checked = new Set(
+    [...el(containerId).querySelectorAll("input:checked")].map(
+      (input) => input.dataset.sourceId,
+    ),
+  );
+  return state.sources.filter((source) => checked.has(source.id));
+}
+
+function findSource(sourceId) {
+  return state.sources.find((source) => source.id === sourceId);
+}
+
+function setupAutocomplete(inputId, suggestionsId, onPick) {
+  const input = el(inputId);
+  const box = el(suggestionsId);
+  let selected = null; // { sourceId, stopIdx } | null
+
+  function render(matches) {
+    box.innerHTML = "";
+    for (const { source, idx } of matches) {
+      const button = document.createElement("button");
+      button.type = "button";
+      const name = source.stops.name[idx] || source.stops.id[idx];
+      const suffix = activeSources().length > 1 ? ` · ${source.name}` : "";
+      button.innerHTML = `${escapeHtml(name)} <span class="stop-id">${escapeHtml(source.stops.id[idx])}${escapeHtml(suffix)}</span>`;
+      button.addEventListener("click", () => {
+        input.value = name;
+        selected = { sourceId: source.id, stopIdx: idx };
+        box.innerHTML = "";
+        onPick(selected);
+      });
+      box.appendChild(button);
+    }
+  }
+
+  input.addEventListener("input", () => {
+    selected = null;
+    const point = parseCoordinates(input.value);
+    onPick(point);
+    if (point) {
+      selected = point;
+      box.innerHTML = "";
+      return;
+    }
+    const query = input.value.trim().toLowerCase();
+    if (query.length < 1) {
+      box.innerHTML = "";
+      return;
+    }
+    const matches = [];
+    outer: for (const source of activeSources()) {
+      for (const idx of source.stopFamily.searchable) {
+        if (matches.length >= 8) break outer;
+        const name = (source.stops.name[idx] || "").toLowerCase();
+        const id = source.stops.id[idx].toLowerCase();
+        if (name.includes(query) || id.includes(query)) {
+          matches.push({ source, idx });
+        }
+      }
+    }
+    render(matches);
+  });
+
+  input.addEventListener("blur", () => {
+    // let the click on a suggestion register before we clear the list
+    setTimeout(() => (box.innerHTML = ""), 150);
+  });
+
+  return {
+    get value() {
+      return selected;
+    },
+    setByValue(value) {
+      selected = value;
+      box.innerHTML = "";
+      if (!value) {
+        input.value = "";
+        return;
+      }
+      if (value.lat !== undefined) {
+        input.value = `${value.lon.toFixed(6)}, ${value.lat.toFixed(6)}`;
+        return;
+      }
+      const source = findSource(value.sourceId);
+      input.value =
+        source.stops.name[value.stopIdx] || source.stops.id[value.stopIdx];
+    },
+  };
+}
+
+function parseCoordinates(value) {
+  const match = value
+    .trim()
+    .match(
+      /^([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*[,;]\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))$/,
+    );
+  if (!match) return null;
+  const lon = Number(match[1]),
+    lat = Number(match[2]);
+  return Math.abs(lon) <= 180 && Math.abs(lat) <= 90 ? { lon, lat } : null;
+}
+
+function endpointLabel(value) {
+  if (value.lat !== undefined)
+    return `${value.lon.toFixed(6)}, ${value.lat.toFixed(6)}`;
+  const source = findSource(value.sourceId);
+  return `${source.stops.name[value.stopIdx] || source.stops.id[value.stopIdx]} (${source.name})`;
+}
+
+function endpointCoordinates(value) {
+  if (!value) return null;
+  if (value.lat !== undefined) return [value.lon, value.lat];
+  const source = findSource(value.sourceId);
+  const { stopIdx } = value;
+  if (
+    !Number.isFinite(source.stops.lat[stopIdx]) ||
+    !Number.isFinite(source.stops.lon[stopIdx])
+  )
+    return null;
+  return [source.stops.lon[stopIdx], source.stops.lat[stopIdx]];
+}
+
+function escapeHtml(value) {
+  return String(value).replace(
+    /[&<>"']/g,
+    (c) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      })[c],
+  );
+}
+
+function toLocalDateTimeValue(date) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function formatTime(seconds) {
+  return new Date(seconds * 1000).toLocaleString(undefined, {
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function formatDuration(seconds) {
+  const minutes = Math.round(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return hours > 0
+    ? `${hours}h${String(remainder).padStart(2, "0")}`
+    : `${remainder} min`;
+}
+
+function renderLeg(source, leg) {
+  const routeName = leg.routeName;
+  const headsign = leg.headsign;
+
+  const div = document.createElement("div");
+  div.className = "leg";
+  div.innerHTML = `
+<div class="row">
+  <span class="stop">${escapeHtml(source.stops.name[leg.boardStop] || source.stops.id[leg.boardStop])}</span>
+  <span class="time">${formatTime(leg.boardTime)}</span>
+</div>
+<div class="row">
+  <span class="stop">${escapeHtml(source.stops.name[leg.alightStop] || source.stops.id[leg.alightStop])}</span>
+  <span class="time">${formatTime(leg.alightTime)}</span>
+</div>
+<div class="trip">${escapeHtml(source.name)} · ${routeName ? escapeHtml(routeName) + " · " : ""}${escapeHtml(headsign || "")}</div>
+    `;
+  return div;
+}
+
+function optionHeader(index, startTime, endTime, transfers) {
+  const header = document.createElement("div");
+  header.className = "option-header";
+  header.innerHTML = `
+<span class="option-rank">${index + 1}</span>
+<span class="option-duration">${formatDuration(endTime - startTime)}</span>
+<span class="option-transfers">${transfers === 0 ? "direct" : `${transfers} transfer${transfers > 1 ? "s" : ""}`}</span>
+    `;
+  return header;
+}
+
+function renderOption(option, index) {
+  const card = document.createElement("div");
+  card.className = "option";
+  if (!option.legs.length) {
+    card.textContent = "Origin and destination are the same point.";
+    return card;
+  }
+  card.appendChild(
+    optionHeader(index, option.departure, option.arrival, option.transfers),
+  );
+  let previousArrival;
+  for (const leg of option.legs) {
+    if (previousArrival !== undefined && leg.boardTime > previousArrival) {
+      const wait = document.createElement("div");
+      wait.className = "transfer";
+      wait.textContent = `Wait ${formatDuration(leg.boardTime - previousArrival)}`;
+      card.appendChild(wait);
+    }
+    if (leg.kind === "walk") {
+      const walk = document.createElement("div");
+      walk.className = "walk";
+      walk.textContent = `Walk ${Math.round(leg.distanceMeters)} m (${formatDuration(leg.alightTime - leg.boardTime)}) from ${endpointLabel(leg.from)} to ${endpointLabel(leg.to)}`;
+      card.appendChild(walk);
+    } else card.appendChild(renderLeg(findSource(leg.sourceId), leg));
+    previousArrival = leg.alightTime;
+  }
+  card.tabIndex = 0;
+  card.setAttribute("aria-label", `Show journey ${index + 1} on the map`);
+  const select = () => {
+    el("results")
+      .querySelectorAll(".option")
+      .forEach((element) => element.removeAttribute("aria-current"));
+    card.setAttribute("aria-current", "true");
+    showJourney(option);
+  };
+  card.addEventListener("click", select);
+  card.addEventListener("focus", select);
+  return card;
+}
+
+function renderResults(result) {
+  const results = el("results");
+  results.innerHTML = "";
+  if (!result.found) {
+    results.textContent =
+      "No journey found within 24 hours across the selected networks.";
+    return;
+  }
+  for (const [index, option] of result.options.entries())
+    results.appendChild(renderOption(option, index));
+  if (result.options.length) {
+    results.firstElementChild.setAttribute("aria-current", "true");
+    showJourney(result.options[0]);
+  }
+}
+
+function setIsoStatus(message, isError = false) {
+  const element = el("iso-status");
+  element.textContent = message;
+  element.classList.toggle("error", isError);
+}
+
+// Sequential single-hue scale (ColorBrewer Blues, reversed): dark and
+// saturated for a short travel time, fading to pale as it grows.
+const ISO_COLOR_STOPS = ["#08306b", "#2171b5", "#6baed6", "#9ecae1", "#c6dbef"];
+
+function renderIsoLegend(maxDurationSeconds) {
+  const legend = el("iso-legend");
+  legend.innerHTML = "";
+  const min = document.createElement("span");
+  min.textContent = "0 min (dark = closer)";
+  const bar = document.createElement("span");
+  bar.className = "legend-gradient";
+  const max = document.createElement("span");
+  max.textContent = `${Math.round(maxDurationSeconds / 60)} min`;
+  legend.append(min, bar, max);
+}
+
+// Both tabs share a single map-library download.
+let maplibreLoading;
+function loadMaplibre() {
+  if (window.maplibregl) return Promise.resolve(window.maplibregl);
+  if (!maplibreLoading)
+    maplibreLoading = (async () => {
+      if (!document.getElementById("maplibre-css")) {
+        const link = document.createElement("link");
+        link.id = "maplibre-css";
+        link.rel = "stylesheet";
+        link.href =
+          "https://cdn.jsdelivr.net/npm/maplibre-gl@6.9.0/dist/maplibre-gl.css";
+        document.head.appendChild(link);
+      }
+      const lib =
+        await import("https://cdn.jsdelivr.net/npm/maplibre-gl@6.9.0/dist/maplibre-gl.mjs");
+      window.maplibregl = lib;
+      return lib;
+    })().catch((error) => {
+      maplibreLoading = undefined;
+      throw error;
+    });
+  return maplibreLoading;
+}
+
+// Loaded on first use of the Isochrones tab only, alongside MapLibre.
+let contourLibLoading;
+function loadContourLib() {
+  if (!contourLibLoading)
+    contourLibLoading =
+      import("https://cdn.jsdelivr.net/npm/d3-contour@4/+esm").catch(
+        (error) => {
+          contourLibLoading = undefined;
+          throw error;
+        },
+      );
+  return contourLibLoading;
+}
+
+function hexToRgb(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function rgbToHex([r, g, b]) {
+  return (
+    "#" +
+    [r, g, b]
+      .map((v) =>
+        Math.max(0, Math.min(255, Math.round(v)))
+          .toString(16)
+          .padStart(2, "0"),
+      )
+      .join("")
+  );
+}
+// Same dark(close)-to-light(far) scale as the point layer and legend,
+// sampled at an arbitrary fraction of the max travel time.
+function isoColorAt(fraction) {
+  fraction = Math.min(1, Math.max(0, fraction));
+  const scaled = fraction * (ISO_COLOR_STOPS.length - 1);
+  const i = Math.min(ISO_COLOR_STOPS.length - 2, Math.floor(scaled));
+  const t = scaled - i;
+  const a = hexToRgb(ISO_COLOR_STOPS[i]);
+  const b = hexToRgb(ISO_COLOR_STOPS[i + 1]);
+  return rgbToHex(a.map((v, idx) => v + (b[idx] - v) * t));
+}
+
+const ISO_SURFACE_BANDS = 7;
+
+/**
+ * Builds a filled, contoured isochrone surface — like a classic
+ * travel-time map — by interpolating travel time over a regular grid
+ * (inverse-distance weighting from the reachable stops) and slicing it
+ * into nested filled bands with marching squares (d3-contour). This is
+ * an interpolated surface between sampled stops, not a measured
+ * walkshed: it fills the gaps a raw point layer leaves, the same way
+ * the reference map interpolates between railway stations.
+ */
+async function buildIsoSurface(
+  points,
+  origin,
+  maxDurationSeconds,
+  maxWalkMeters,
+) {
+  const d3 = await loadContourLib();
+  const { values, cols, rows, latMin, latMax, lonMin, lonMax } =
+    sampleIsoSurface(points, origin, maxDurationSeconds, maxWalkMeters);
+  // Negated so d3's native ">= threshold" regions become our "<=
+  // threshold" (closer-than) regions, which nest and grow with time.
+  const negated = values.map((v) => -v);
+  const generator = d3.contours().size([cols, rows]);
+  const toLngLat = ([x, y]) => [
+    lonMin + (x / (cols - 1)) * (lonMax - lonMin),
+    latMax - (y / (rows - 1)) * (latMax - latMin),
+  ];
+
+  const features = [];
+  for (let band = ISO_SURFACE_BANDS; band >= 1; band -= 1) {
+    const threshold = (band / ISO_SURFACE_BANDS) * maxDurationSeconds;
+    const polygon = generator.contour(negated, -threshold);
+    if (polygon.coordinates.length)
+      features.push({
+        type: "Feature",
+        properties: {
+          threshold,
+          color: isoColorAt(threshold / maxDurationSeconds),
+        },
+        geometry: {
+          type: "MultiPolygon",
+          coordinates: polygon.coordinates.map((polygonRings) =>
+            polygonRings.map((ring) => ring.map(toLngLat)),
+          ),
+        },
+      });
+    const walkingMeters = Math.min(maxWalkMeters, threshold * WALK_SPEED);
+    if (walkingMeters > 0)
+      features.push({
+        type: "Feature",
+        properties: {
+          threshold,
+          color: isoColorAt(threshold / maxDurationSeconds),
+        },
+        geometry: {
+          type: "Polygon",
+          coordinates: [walkingRing(origin, walkingMeters)],
+        },
+      });
+  }
+  return { type: "FeatureCollection", features };
+}
+
+function mapStyle() {
+  return {
+    version: 8,
+    sources: {
+      basemap: {
+        type: "raster",
+        tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+        tileSize: 256,
+        maxzoom: 19,
+        attribution:
+          '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
+      },
+    },
+    layers: [
+      {
+        id: "background",
+        type: "background",
+        paint: { "background-color": "#b9d9ee" },
+      },
+      { id: "basemap", type: "raster", source: "basemap" },
+    ],
+  };
+}
+
+const emptyFeatures = () => ({ type: "FeatureCollection", features: [] });
+let routeMap,
+  routeMapReady,
+  routeMarkers = [];
+let profileFeatures = [],
+  journeyFeatures = [];
+let routeDrawPending = false;
+
+function routeMapError(error) {
+  console.error(error);
+  el("route-map-status").textContent = `Map failed to load: ${error.message}`;
+}
+
+function ensureRouteMap() {
+  if (!routeMapReady)
+    routeMapReady = initializeRouteMap().catch((error) => {
+      routeMap?.remove();
+      routeMap = undefined;
+      routeMapReady = undefined;
+      throw error;
+    });
+  return routeMapReady;
+}
+
+async function initializeRouteMap() {
+  const maplibregl = await loadMaplibre();
+  routeMap = new maplibregl.Map({
+    container: "route-map",
+    style: mapStyle(),
+    center: [3.73, 51.04],
+    zoom: 11,
+  });
+  routeMap.addControl(new maplibregl.NavigationControl(), "top-right");
+  await new Promise((resolve) => routeMap.on("style.load", resolve));
+  for (const id of ["profile-lines", "journey-lines"]) {
+    routeMap.addSource(id, { type: "geojson", data: emptyFeatures() });
+    routeMap.addLayer({
+      id,
+      type: "line",
+      source: id,
+      paint: {
+        "line-color": [
+          "case",
+          ["==", ["get", "kind"], "walk"],
+          "#d97706",
+          id === "profile-lines" ? "#2171b5" : "#0f6b4c",
+        ],
+        "line-width": id === "profile-lines" ? 1.5 : 4,
+        "line-opacity": id === "profile-lines" ? 0.45 : 0.95,
+      },
+    });
+  }
+  routeMap.on("click", ({ lngLat }) => {
+    if (!originPicker || !destinationPicker) return;
+    const value = { lon: lngLat.lng, lat: lngLat.lat };
+    const picker = mapEndpoint === "origin" ? originPicker : destinationPicker;
+    state[mapEndpoint] = value;
+    picker.setByValue(value);
+    syncRouteMarkers();
+    if (mapEndpoint === "origin") setMapEndpoint("destination");
+    if (state.origin && state.destination) {
+      // Keep only the latest pair if another scan is still running.
+      journeyRevision += 1;
+      if (journeyRunning) {
+        mapJourneyPending = true;
+        el("results").innerHTML = "";
+        clearRouteLines();
+        setStatus("Updating the journey for the selected points…");
+      } else el("journey-form").requestSubmit();
+    }
+  });
+  routeMap.getCanvas().style.cursor = "crosshair";
+  setMapEndpoint(mapEndpoint);
+  syncRouteMarkers(true);
+  scheduleRouteDraw();
+  return routeMap;
+}
+
+function setMapEndpoint(endpoint) {
+  mapEndpoint = endpoint;
+  el("map-set-origin").setAttribute(
+    "aria-pressed",
+    String(endpoint === "origin"),
+  );
+  el("map-set-destination").setAttribute(
+    "aria-pressed",
+    String(endpoint === "destination"),
+  );
+  el("route-map-status").textContent =
+    `Click the map to set ${endpoint === "origin" ? "From (A)" : "To (B)"}.`;
+}
+el("map-set-origin").addEventListener("click", () => setMapEndpoint("origin"));
+el("map-set-destination").addEventListener("click", () =>
+  setMapEndpoint("destination"),
+);
+el("origin-input").addEventListener("focus", () => setMapEndpoint("origin"));
+el("destination-input").addEventListener("focus", () =>
+  setMapEndpoint("destination"),
+);
+
+function fitCoordinates(points) {
+  if (!routeMap || !points.length) return;
+  const bounds = new window.maplibregl.LngLatBounds();
+  points.forEach((point) => bounds.extend(point));
+  routeMap.fitBounds(bounds, { padding: 50, maxZoom: 14, duration: 500 });
+}
+
+function syncRouteMarkers(fit = false) {
+  if (!routeMap) return;
+  routeMarkers.forEach((marker) => marker.remove());
+  routeMarkers = [];
+  const points = [];
+  for (const [endpoint, label] of [
+    ["origin", "A"],
+    ["destination", "B"],
+  ]) {
+    const point = endpointCoordinates(state[endpoint]);
+    if (!point) continue;
+    points.push(point);
+    const element = document.createElement("div");
+    element.className = `endpoint-marker ${endpoint}`;
+    element.textContent = label;
+    element.setAttribute(
+      "aria-label",
+      `${endpoint}: ${endpointLabel(state[endpoint])}`,
+    );
+    routeMarkers.push(
+      new window.maplibregl.Marker({ element })
+        .setLngLat(point)
+        .addTo(routeMap),
+    );
+  }
+  if (fit) fitCoordinates(points);
+}
+
+function lineFeature(from, to, kind) {
+  return {
+    type: "Feature",
+    properties: { kind },
+    geometry: { type: "LineString", coordinates: [from, to] },
+  };
+}
+function addProfileEdges(edges) {
+  profileFeatures.push(
+    ...edges.map(({ from, to, kind }) => lineFeature(from, to, kind)),
+  );
+  scheduleRouteDraw();
+}
+function scheduleRouteDraw() {
+  if (routeDrawPending) return;
+  routeDrawPending = true;
+  requestAnimationFrame(() => {
+    routeDrawPending = false;
+    routeMap?.getSource("profile-lines")?.setData({
+      type: "FeatureCollection",
+      features: profileFeatures.slice(),
+    });
+    routeMap?.getSource("journey-lines")?.setData({
+      type: "FeatureCollection",
+      features: journeyFeatures.slice(),
+    });
+  });
+}
+function clearRouteLines() {
+  profileFeatures = [];
+  journeyFeatures = [];
+  scheduleRouteDraw();
+}
+function showJourney(option) {
+  journeyFeatures = [];
+  for (const leg of option.legs) {
+    const from = endpointCoordinates(
+      leg.kind === "walk"
+        ? leg.from
+        : { sourceId: leg.sourceId, stopIdx: leg.boardStop },
+    );
+    const to = endpointCoordinates(
+      leg.kind === "walk"
+        ? leg.to
+        : { sourceId: leg.sourceId, stopIdx: leg.alightStop },
+    );
+    if (leg.geometry)
+      journeyFeatures.push({
+        type: "Feature",
+        properties: { kind: leg.kind },
+        geometry: leg.geometry,
+      });
+    else if (from && to) journeyFeatures.push(lineFeature(from, to, leg.kind));
+  }
+  scheduleRouteDraw();
+  fitCoordinates(
+    journeyFeatures.flatMap((feature) => feature.geometry.coordinates),
+  );
+}
+
+let isoMap;
+let isoMapReady;
+let isoOriginMarker;
+
+async function ensureIsoMap() {
+  if (!isoMapReady)
+    isoMapReady = initializeIsoMap().catch((error) => {
+      isoMap?.remove();
+      isoMap = undefined;
+      isoMapReady = undefined;
+      throw error;
+    });
+  return isoMapReady;
+}
+
+async function initializeIsoMap() {
+  const maplibregl = await loadMaplibre();
+  isoMap = new maplibregl.Map({
+    container: "iso-map",
+    style: mapStyle(),
+    center: [4.47, 50.85], // Belgium
+    zoom: 7.3,
+  });
+  isoMap.addControl(new maplibregl.NavigationControl(), "top-right");
+  await new Promise((resolve) => {
+    isoMap.on("style.load", () => {
+      isoMap.addSource("iso-surface", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      isoMap.addLayer({
+        id: "iso-surface",
+        type: "fill",
+        source: "iso-surface",
+        paint: {
+          "fill-color": ["get", "color"],
+          "fill-opacity": 0.68,
+        },
+      });
+      isoMap.addSource("iso-points", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      isoMap.addLayer({
+        id: "iso-points",
+        type: "circle",
+        source: "iso-points",
+        paint: {
+          "circle-radius": 2,
+          "circle-color": ["get", "networkColor"],
+          "circle-opacity": 0.9,
+          "circle-stroke-width": 0,
+        },
+      });
+      isoMap.on("click", "iso-points", (event) => {
+        const feature = event.features[0];
+        const props = feature.properties;
+        new maplibregl.Popup({ maxWidth: "280px" })
+          .setLngLat(feature.geometry.coordinates)
+          .setHTML(
+            `<strong>${escapeHtml(props.name)}</strong><br>${escapeHtml(props.networkName)} · ${escapeHtml(formatDuration(props.durationSeconds))}`,
+          )
+          .addTo(isoMap);
+      });
+      isoMap.on("click", async (event) => {
+        if (
+          isoMap.queryRenderedFeatures(event.point, {
+            layers: ["iso-points"],
+          }).length
+        )
+          return;
+        await runIsochrone(event.lngLat.lat, event.lngLat.lng);
+      });
+      resolve();
+    });
+  });
+  return isoMap;
+}
+
+function clearIsoPoints() {
+  el("iso-legend").innerHTML = "";
+  isoMap
+    ?.getSource("iso-points")
+    ?.setData({ type: "FeatureCollection", features: [] });
+  isoMap
+    ?.getSource("iso-surface")
+    ?.setData({ type: "FeatureCollection", features: [] });
+}
+
+function clearIsochrone() {
+  isoLastRequestId += 1;
+  isoOriginMarker?.remove();
+  isoOriginMarker = undefined;
+  clearIsoPoints();
+  setIsoStatus(
+    "Ready — click the map to compute an isochrone from that point.",
+  );
+}
+
+let isoLastRequestId = 0;
+
+async function runIsochrone(lat, lon) {
+  if (!planner || !isoMap) return;
+  await ensureIsoMap();
+  const departureDate = new Date(el("iso-departure-input").value);
+  if (Number.isNaN(departureDate.getTime())) {
+    setIsoStatus("Pick a valid departure date/time.", true);
+    return;
+  }
+  const maxDurationSeconds = Number(el("iso-duration-input").value);
+  const maxWalkMeters = Number(el("iso-max-walk-input").value);
+  if (!Number.isFinite(maxWalkMeters) || maxWalkMeters < 0) {
+    setIsoStatus("Max walking distance must be a non-negative number.", true);
+    return;
+  }
+
+  const requestId = ++isoLastRequestId;
+  const maplibregl = await loadMaplibre();
+  isoOriginMarker?.remove();
+  isoOriginMarker = new maplibregl.Marker({ color: "#0f6b4c" })
+    .setLngLat([lon, lat])
+    .addTo(isoMap);
+  isoOriginMarker.getElement().style.pointerEvents = "none";
+  clearIsoPoints();
+
+  const startedAt = performance.now();
+  setIsoStatus("Loading connections and scanning the selected networks…");
+  try {
+    const departureAfter = Math.floor(departureDate.getTime() / 1000);
+    const onProgress = ({ phase, completed, total }) => {
+      if (requestId !== isoLastRequestId) return;
+      setIsoStatus(
+        phase === "loading"
+          ? `Loading timetable pages: ${completed}/${total}…`
+          : "Scanning reachable regions…",
+      );
+    };
+    const result = await planner.request(
+      "isochrone",
+      {
+        origin: { lat, lon },
+        departureAfter,
+        maxDurationSeconds,
+        maxWalkMeters,
+        sourceIds: activeSources("iso-source-list").map((source) => source.id),
+      },
+      onProgress,
+    );
+    if (requestId !== isoLastRequestId) return; // superseded by a later click
+
+    const features = result.points.map((point) => ({
+      type: "Feature",
+      geometry: { type: "Point", coordinates: [point.lon, point.lat] },
+      properties: {
+        name: point.name,
+        networkName: point.networkName,
+        networkColor: point.networkColor,
+        durationSeconds: point.durationSeconds,
+      },
+    }));
+    isoMap
+      .getSource("iso-points")
+      .setData({ type: "FeatureCollection", features });
+    renderIsoLegend(maxDurationSeconds);
+    setIsoStatus("Building the isochrone surface…");
+    try {
+      const surface = await buildIsoSurface(
+        result.points,
+        { lat, lon },
+        maxDurationSeconds,
+        maxWalkMeters,
+      );
+      if (requestId !== isoLastRequestId) return;
+      isoMap.getSource("iso-surface").setData(surface);
+    } catch (error) {
+      console.error("Isochrone surface failed", error);
+      setIsoStatus(
+        `Reached ${result.points.length} stops, but the surface failed: ${error.message}`,
+        true,
+      );
+      return;
+    }
+    const elapsed = Math.round(performance.now() - startedAt);
+    setIsoStatus(
+      `${result.noAccess ? "Walking area only; no stop is within walking range. " : ""}Reached ${result.points.length.toLocaleString()} stop(s) within ${Math.round(maxDurationSeconds / 60)} min, scanning ${result.scanned.toLocaleString()} connections across ${result.pages} pages in ${elapsed} ms.`,
+    );
+  } catch (error) {
+    if (requestId !== isoLastRequestId) return;
+    console.error(error);
+    setIsoStatus(`Isochrone failed: ${error.message}`, true);
+  }
+}
+
+function activateTab(tabId) {
+  for (const [button, panel] of [
+    ["tab-planner", "panel-planner"],
+    ["tab-isochrones", "panel-isochrones"],
+  ]) {
+    const isActive = button === tabId;
+    el(button).setAttribute("aria-selected", String(isActive));
+    el(panel).hidden = !isActive;
+  }
+  if (tabId === "tab-planner")
+    ensureRouteMap()
+      .then((map) => map.resize())
+      .catch(routeMapError);
+  if (tabId === "tab-isochrones")
+    ensureIsoMap()
+      .then((map) => map.resize())
+      .catch((error) => {
+        console.error(error);
+        setIsoStatus(`Map failed to load: ${error.message}`, true);
+      });
+}
+el("tab-planner").addEventListener("click", () => activateTab("tab-planner"));
+el("tab-isochrones").addEventListener("click", () =>
+  activateTab("tab-isochrones"),
+);
+
+// Current time, clamped into the span covered by the loaded sources.
+function defaultDeparture(sources) {
+  const times = (key) =>
+    sources
+      .map((source) => Date.parse(source.manifest[key]))
+      .filter(Number.isFinite);
+  const start = Math.min(...times("coverageStart"));
+  const end = Math.max(...times("coverageEnd"));
+  const now = Date.now();
+  if (now < start) return new Date(start);
+  if (now > end) return new Date(Math.max(start, end - 24 * 3600 * 1000));
+  return new Date(now);
+}
+
+// Pre-select a familiar Gent → Liège pair when a source names those stations
+// (in Dutch, French or English); otherwise leave the endpoints empty.
+function defaultEndpoints(sources) {
+  const names = [
+    /^(gent-sint-pieters|gand-saint-pierre|ghent-sint-pieters)$/i,
+    /^li[eè]ge-guillemins$/i,
+  ];
+  for (const source of sources) {
+    const found = names.map((pattern) =>
+      source.stopFamily.searchable.find((idx) =>
+        pattern.test(source.stops.name[idx] || ""),
+      ),
+    );
+    if (found.every((idx) => idx !== undefined))
+      return found.map((stopIdx) => ({ sourceId: source.id, stopIdx }));
+  }
+  return null;
+}
+
+async function init() {
+  try {
+    planner = new PlannerClient(createPlannerWorker());
+    const configuredUrl = resolveDataUrl(
+      dataUrl,
+      window.location.href,
+      document.baseURI,
+    );
+    el("data-url").value = configuredUrl;
+    setStatus("Discovering sources…");
+    state.sources = await planner.request("init", {
+      dataUrl: resolveDataUrl(dataUrl, window.location.href, document.baseURI),
+    });
+    if (state.sources.length === 0) {
+      throw new Error("no source could be loaded");
+    }
+
+    renderSourceCheckboxes();
+    renderSourceCheckboxes("iso-source-list");
+
+    const origin = (originPicker = setupAutocomplete(
+      "origin-input",
+      "origin-suggestions",
+      (value) => {
+        state.origin = value;
+        syncRouteMarkers(true);
+      },
+    ));
+    const destination = (destinationPicker = setupAutocomplete(
+      "destination-input",
+      "destination-suggestions",
+      (value) => {
+        state.destination = value;
+        syncRouteMarkers(true);
+      },
+    ));
+
+    // Selected stops belong to a specific source, so changing which
+    // sources are active can invalidate the current picks.
+    el("source-list")
+      .querySelectorAll("input")
+      .forEach((input) =>
+        input.addEventListener("change", () => {
+          const ids = new Set(activeSources().map((source) => source.id));
+          if (state.origin?.sourceId && !ids.has(state.origin.sourceId)) {
+            state.origin = null;
+            origin.setByValue(null);
+          }
+          if (
+            state.destination?.sourceId &&
+            !ids.has(state.destination.sourceId)
+          ) {
+            state.destination = null;
+            destination.setByValue(null);
+          }
+          clearRouteLines();
+          syncRouteMarkers();
+        }),
+      );
+
+    const totalStops = state.sources.reduce(
+      (sum, source) => sum + source.manifest.counts.stops,
+      0,
+    );
+    el("footer").textContent =
+      `${state.sources.length} source(s) · ${totalStops.toLocaleString()} stops total. ` +
+      `Journeys use all selected networks, with walking at the start, between rides, and at the end.`;
+    el("iso-footer").textContent =
+      `The colored surface interpolates travel time between reachable stops (dots) — a smoothed ` +
+      `estimate, not a measured walking catchment. Loads the map library, contouring library and ` +
+      `OpenStreetMap tiles from a CDN on first use.`;
+
+    el("swap-button").addEventListener("click", () => {
+      const originValue = state.origin;
+      const destinationValue = state.destination;
+      origin.setByValue(destinationValue ?? null);
+      destination.setByValue(originValue ?? null);
+      state.origin = destinationValue ?? null;
+      state.destination = originValue ?? null;
+      syncRouteMarkers();
+    });
+
+    const example = state.sources.find(
+      (source) => source.manifest.releaseId === "illustrative-20261108",
+    );
+    // The bundled sample is a fixed day; real feeds start at the current time,
+    // clamped into their published coverage.
+    const initialTime = example
+      ? new Date(example.manifest.coverageStart)
+      : defaultDeparture(state.sources);
+    el("departure-input").value = toLocalDateTimeValue(initialTime);
+    el("iso-departure-input").value = toLocalDateTimeValue(initialTime);
+    const endpoints = example
+      ? [
+          { sourceId: example.id, stopIdx: 0 },
+          { sourceId: example.id, stopIdx: 3 },
+        ]
+      : defaultEndpoints(state.sources);
+    if (endpoints) {
+      [state.origin, state.destination] = endpoints;
+      origin.setByValue(state.origin);
+      destination.setByValue(state.destination);
+    }
+
+    setStatus(
+      `Ready — ${totalStops.toLocaleString()} stops loaded across ${state.sources.length} source(s).`,
+    );
+    planButton.disabled = false;
+    planButton.textContent = "Plan journey";
+
+    el("iso-source-list")
+      .querySelectorAll("input")
+      .forEach((input) =>
+        input.addEventListener("change", () => clearIsochrone()),
+      );
+    setIsoStatus(
+      `Ready — click the map to compute an isochrone from that point.`,
+    );
+  } catch (error) {
+    console.error(error);
+    setStatus(
+      `Could not load data: ${error.message}. Enter an LC 2.0-alpha manifest URL or use the iRail CDN default.`,
+      true,
+    );
+    setIsoStatus(`Could not load data: ${error.message}`, true);
+  }
+}
+
+el("journey-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (journeyRunning) return;
+  if (!state.origin || !state.destination) {
+    setStatus(
+      "Choose both endpoints using stop suggestions, longitude/latitude, or the map.",
+      true,
+    );
+    return;
+  }
+  const departureDate = new Date(el("departure-input").value);
+  if (Number.isNaN(departureDate.getTime())) {
+    setStatus("Pick a valid departure date/time.", true);
+    return;
+  }
+  const maxWalkMeters = Number(el("max-walk-input").value);
+  if (!Number.isFinite(maxWalkMeters) || maxWalkMeters < 0) {
+    setStatus("Max walking transfer must be a non-negative number.", true);
+    return;
+  }
+
+  journeyRunning = true;
+  const revision = ++journeyRevision;
+  planButton.disabled = true;
+  const startedAt = performance.now();
+  el("results").innerHTML = "";
+  clearRouteLines();
+  try {
+    const departureAfter = Math.floor(departureDate.getTime() / 1000);
+    const windowMode = el("journey-window-input").value;
+    const onProgress = ({ phase, completed, total, edges }) => {
+      if (revision !== journeyRevision) return;
+      if (edges) {
+        addProfileEdges(edges);
+        return;
+      }
+      setStatus(
+        phase === "loading"
+          ? `Loading timetable pages: ${completed}/${total}…`
+          : phase === "earliest"
+            ? "Finding the earliest arrival…"
+            : phase === "labels"
+              ? "Loading journey details…"
+              : "Building journey profiles…",
+      );
+    };
+
+    setStatus("Loading connections and planning the journey…");
+    const result = await planner.request(
+      "plan",
+      {
+        origin: state.origin,
+        destination: state.destination,
+        departureAfter,
+        maxWalkMeters,
+        windowMode,
+        sourceIds: activeSources().map((source) => source.id),
+      },
+      onProgress,
+    );
+
+    if (revision !== journeyRevision) return;
+    const elapsed = Math.round(performance.now() - startedAt);
+    const shown = result.options.length;
+    const hiddenNote =
+      result.totalOptions > shown
+        ? ` (showing the first ${shown} of ${result.totalOptions} Pareto-optimal alternatives)`
+        : "";
+    const windowNote =
+      result.window && result.found
+        ? ` Search window: ${formatDuration(result.window.to - result.window.from)}${result.window.mode === "adaptive" ? " (twice earliest journey time, capped at 24 h)" : ""}.`
+        : "";
+    setStatus(
+      result.found
+        ? `Found ${shown} journey option${shown === 1 ? "" : "s"}${hiddenNote} across the selected networks, scanning ${result.scanned.toLocaleString()} connections in ${elapsed} ms.${windowNote}`
+        : `No journey found across the selected networks after scanning ${result.scanned.toLocaleString()} connections in ${elapsed} ms.`,
+      !result.found,
+    );
+    renderResults(result);
+  } catch (error) {
+    if (revision !== journeyRevision) return;
+    console.error(error);
+    setStatus(`Route planning failed: ${error.message}`, true);
+  } finally {
+    journeyRunning = false;
+    planButton.disabled = false;
+    if (mapJourneyPending) {
+      mapJourneyPending = false;
+      el("journey-form").requestSubmit();
+    }
+  }
+});
+
+ensureRouteMap().catch(routeMapError);
+init();

@@ -1,0 +1,65 @@
+{
+  "name": "@irail/planner",
+  "version": "0.1.0-alpha.0",
+  "description": "Journey planning in Node.js and browsers over Linked Connections 2.0-alpha",
+  "type": "module",
+  "main": "./src/index.mjs",
+  "types": "./src/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.mts",
+      "import": "./src/index.mjs"
+    },
+    "./core": "./src/planner-core.mjs",
+    "./browser": {
+      "types": "./src/browser.d.mts",
+      "import": "./src/browser.mjs"
+    },
+    "./worker": "./src/planner-worker.mjs",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "test": "node --test --test-isolation=none test/*.test.mjs",
+    "test:coverage": "node --experimental-test-coverage --test --test-isolation=none test/*.test.mjs",
+    "dev": "node scripts/build-demo.mjs && vite --host 127.0.0.1",
+    "build": "npm run build:playground",
+    "build:playground": "node scripts/build-demo.mjs && vite build",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iRail/planner.git"
+  },
+  "homepage": "https://irail.github.io/planner/",
+  "bugs": {
+    "url": "https://github.com/iRail/planner/issues"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "irail",
+    "linked-connections",
+    "apache-arrow",
+    "transit",
+    "route-planner",
+    "csa"
+  ],
+  "dependencies": {
+    "apache-arrow": "^21.2.0",
+    "uri-templates": "^0.2.0"
+  },
+  "devDependencies": {
+    "vite": "^8.3.5"
+  }
+}

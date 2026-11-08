@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>iRail planner · Playground &amp; documentation</title>
+    <meta
+      name="description"
+      content="Plan rail journeys with Linked Connections 2.0-alpha. Try the browser playground and learn to use the npm library in Node.js and browsers."
+    />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main>
+      <h1>iRail planner</h1>
+      <p class="subtitle">
+        Journey planning over
+        <a href="https://linkedconnections.org/specification/2-0-alpha"
+          >Linked Connections 2.0-alpha</a
+        >, in Node.js and your browser.
+      </p>
+      <p class="wip-notice" role="note">
+        <strong>Work in progress.</strong> <code>@irail/planner</code> is not
+        yet published on npm, and it targets a draft specification.
+      </p>
+      <nav class="site-nav" aria-label="Main navigation">
+        <a href="#playground">Playground</a><a href="#quickstart">Quick start</a
+        ><a href="#api">API</a><a href="#data">Data format</a
+        ><a href="https://github.com/iRail/planner">Source on GitHub</a>
+      </nav>
+      <section class="panel" id="playground" aria-label="Timetable selection">
+        <form class="data-form" method="get">
+          <div class="field">
+            <label for="data-url">Timetable URL</label
+            ><input
+              id="data-url"
+              name="data"
+              type="url"
+              required
+              aria-describedby="data-note"
+            />
+          </div>
+          <button type="submit">Load timetable</button>
+          <a href="./">Use iRail CDN</a>
+          <a href="?data=./data/">Use illustrative sample</a>
+        </form>
+        <p class="data-note" id="data-note">
+          By default the playground loads the
+          <a href="https://irail.github.io/iRail-cdn/manifest.jsonld"
+            >iRail CDN</a
+          >
+          timetable: NMBS/SNCB open data converted to Linked Connections
+          2.0-alpha. The format is a draft and the data is scheduled service
+          only, without realtime. Enter your own LC alpha manifest URL to try
+          another publisher, or load the sample, which uses invented services
+          on 8 November 2026 and is not a real timetable.
+        </p>
+      </section>
+
+      <div class="tabs" role="tablist">
+        <button
+          type="button"
+          class="tab-button"
+          id="tab-planner"
+          role="tab"
+          aria-selected="true"
+          aria-controls="panel-planner"
+        >
+          Route Planner
+        </button>
+        <button
+          type="button"
+          class="tab-button"
+          id="tab-isochrones"
+          role="tab"
+          aria-selected="false"
+          aria-controls="panel-isochrones"
+        >
+          Analysis
+        </button>
+      </div>
+
+      <section class="tab-panel" id="panel-planner" role="tabpanel">
+        <div class="planner-layout">
+          <div class="planner-results">
+            <form class="panel" id="journey-form">
+              <div class="sources" id="source-list"></div>
+
+              <div class="field">
+                <label for="origin-input">From</label>
+                <input
+                  type="text"
+                  id="origin-input"
+                  autocomplete="off"
+                  placeholder="Search a stop or enter lon, lat…"
+                />
+                <div class="suggestions" id="origin-suggestions"></div>
+                <p class="coordinate-hint">
+                  Coordinates: longitude, latitude (e.g. 3.709369, 51.010063),
+                  or click the map.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                class="swap"
+                id="swap-button"
+                title="Swap origin and destination"
+              >
+                ⇅ swap
+              </button>
+
+              <div class="field">
+                <label for="destination-input">To</label>
+                <input
+                  type="text"
+                  id="destination-input"
+                  autocomplete="off"
+                  placeholder="Search a stop or enter lon, lat…"
+                />
+                <div class="suggestions" id="destination-suggestions"></div>
+              </div>
+
+              <div class="field">
+                <label for="departure-input">Depart after</label>
+                <input type="datetime-local" id="departure-input" />
+              </div>
+
+              <details class="advanced">
+                <summary>Advanced</summary>
+                <div class="field">
+                  <label for="journey-window-input">Search window</label>
+                  <select id="journey-window-input">
+                    <option value="adaptive">
+                      Twice the earliest journey time
+                    </option>
+                    <option value="full">Full 24 hours</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="max-walk-input"
+                    >Maximum walking distance per leg (meters)</label
+                  >
+                  <input
+                    type="number"
+                    id="max-walk-input"
+                    min="0"
+                    max="5000"
+                    step="50"
+                    value="1000"
+                  />
+                </div>
+              </details>
+
+              <button type="submit" class="primary" id="plan-button" disabled>
+                Loading data…
+              </button>
+            </form>
+
+            <div id="status"></div>
+            <div id="results"></div>
+          </div>
+          <aside class="route-map-panel" aria-label="Route map">
+            <div
+              class="map-actions"
+              aria-label="Choose which endpoint a map click sets"
+            >
+              <button type="button" id="map-set-origin" aria-pressed="true">
+                Set From (A)
+              </button>
+              <button
+                type="button"
+                id="map-set-destination"
+                aria-pressed="false"
+              >
+                Set To (B)
+              </button>
+            </div>
+            <div id="route-map"></div>
+            <p class="map-hint" id="route-map-status">Loading map…</p>
+            <p class="map-hint">
+              Blue: connections added to the profile · Orange: walking · Green:
+              selected journey. Select a result to show its journey.
+            </p>
+          </aside>
+        </div>
+
+        <footer id="footer"></footer>
+      </section>
+
+      <section class="tab-panel" id="panel-isochrones" role="tabpanel" hidden>
+        <p class="subtitle">
+          Explore accessibility with isochrones: click the map to see which
+          stops you can reach within a chosen travel time across the selected
+          networks. Timetable pages load as reachable stops activate their
+          regions.
+        </p>
+
+        <div class="panel" id="iso-controls">
+          <div class="sources" id="iso-source-list"></div>
+
+          <div class="field">
+            <label for="iso-departure-input">Depart after</label>
+            <input type="datetime-local" id="iso-departure-input" />
+          </div>
+
+          <div class="field">
+            <label for="iso-duration-input">Max travel time</label>
+            <select id="iso-duration-input">
+              <option value="900">15 min</option>
+              <option value="1800" selected>30 min</option>
+              <option value="2700">45 min</option>
+              <option value="3600">60 min</option>
+              <option value="5400">90 min</option>
+              <option value="7200">120 min</option>
+            </select>
+          </div>
+
+          <details class="advanced">
+            <summary>Advanced</summary>
+            <div class="field">
+              <label for="iso-max-walk-input"
+                >Maximum walking distance to/between stops (meters)</label
+              >
+              <input
+                type="number"
+                id="iso-max-walk-input"
+                min="0"
+                max="5000"
+                step="50"
+                value="1000"
+              />
+            </div>
+          </details>
+        </div>
+
+        <div id="iso-status">Loading data…</div>
+        <div id="iso-map"></div>
+        <div class="legend" id="iso-legend"></div>
+
+        <footer id="iso-footer"></footer>
+      </section>
+      <section class="docs panel" id="quickstart">
+        <h2>Use the library</h2>
+        <p>
+          <code>@irail/planner</code> is an ESM npm library for Node.js 22.12+
+          and modern browsers. It scans Arrow connection pages locally and
+          returns alternatives with departure time, arrival time and vehicle
+          changes.
+        </p>
+        <p>
+          <strong>Not yet published on npm.</strong> This is a work in
+          progress: <code>npm install @irail/planner</code> will not work until
+          the first release. For now, clone the
+          <a href="https://github.com/iRail/planner">repository</a> and install
+          from the checkout:
+        </p>
+        <pre><code>git clone https://github.com/iRail/planner
+cd planner &amp;&amp; npm ci
+npm install /path/to/planner   # from your own project</code></pre>
+        <p>
+          Start the playground locally with
+          <code>npm run dev</code>. This Node.js example reads the live iRail
+          CDN timetable; pick stops by name instead of fixed indices:
+        </p>
+        <pre><code>import { createPlanner } from '@irail/planner';
+
+const planner = createPlanner({
+  dataUrl: 'https://irail.github.io/iRail-cdn/manifest.jsonld',
+});
+const [source] = await planner.init();
+const stop = (iri) => source.stops.id.indexOf(iri);
+const result = await planner.plan({
+  // Gent-Sint-Pieters to Liège-Guillemins
+  origin: { sourceId: source.id, stopIdx: stop('https://irail.be/id/be.sncb/stops/S8892007') },
+  destination: { sourceId: source.id, stopIdx: stop('https://irail.be/id/be.sncb/stops/S8841004') },
+  departureAfter: Math.floor(Date.now() / 1000),
+  maxWalkMeters: 1000,
+});
+console.log(result.options);</code></pre>
+        <p>
+          Stop indices refer to the loaded source.
+          <code>source.stops.id</code> contains the publisher's stop IRIs; find
+          an index with <code>source.stops.id.indexOf(stopIri)</code>, or use
+          <code>{ lon, lat }</code> as either endpoint.
+        </p>
+        <h3>Keep the browser responsive</h3>
+        <p>
+          With a worker-aware bundler such as Vite, import the browser entry.
+          The playground uses this same API:
+        </p>
+        <pre><code>import { PlannerClient, createPlannerWorker } from '@irail/planner/browser';
+
+const client = new PlannerClient(createPlannerWorker());
+const sources = await client.request('init', { dataUrl: manifestUrl });
+const result = await client.request('plan', query, onProgress);
+client.close();</code></pre>
+      </section>
+      <section class="docs panel" id="api">
+        <h2>API reference</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Behavior</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>createPlanner(options)</code></td>
+              <td>
+                Returns a planner. Options: <code>dataUrl</code>, optional
+                <code>fetch</code>, and <code>cacheBytes</code> (64 MiB
+                default).
+              </td>
+            </tr>
+            <tr>
+              <td><code>await planner.init(url?)</code></td>
+              <td>
+                Loads reference tables and returns source metadata, stop IRIs,
+                names and coordinates. Call again to load a new release.
+              </td>
+            </tr>
+            <tr>
+              <td><code>await planner.plan(query, onProgress?)</code></td>
+              <td>
+                Returns <code>found</code>, <code>options</code>,
+                <code>totalOptions</code>, <code>window</code>,
+                <code>scanned</code> and diagnostics. Each option has departure,
+                arrival, transfers and ride/walk legs.
+              </td>
+            </tr>
+            <tr>
+              <td><code>await planner.isochrone(query, onProgress?)</code></td>
+              <td>
+                Uses a coordinate origin and
+                <code>maxDurationSeconds</code> (60–10800). Returns reachable
+                stop points and travel durations.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Journey queries require <code>origin</code>, <code>destination</code>,
+          and <code>departureAfter</code> as UTC epoch seconds. Optional
+          <code>sourceIds</code> limits active feeds.
+          <code>maxWalkMeters</code> is 0–5000 (Node API default: 1000), for
+          each continuous walk at 5 km/h.
+        </p>
+        <p>
+          <code>windowMode: 'adaptive'</code> is the default: find the earliest
+          arrival in 24 hours, then search a window twice that elapsed time,
+          capped at 24 hours. Use <code>'full'</code> to search the whole day.
+          Results contain up to six nondominated alternatives; later or slower
+          departures outside the adaptive window may be excluded.
+        </p>
+        <p>
+          Ride legs expose the publisher's <code>tripIri</code>,
+          <code>routeIri</code>, <code>connectionIri</code> (boarding
+          connection), <code>boardStopIri</code>, and
+          <code>alightStopIri</code>. Times are always seconds, not JavaScript
+          milliseconds. Calls on a planner instance run sequentially and reuse
+          its connection cache.
+        </p>
+      </section>
+      <section class="docs panel" id="data">
+        <h2>Bring your timetable</h2>
+        <p>
+          Use an absolute HTTP(S) manifest URL (any filename), or a directory
+          URL ending in <code>/</code> containing <code>manifest.jsonld</code>.
+          For multiple feeds, a directory can contain <code>sources.json</code>:
+        </p>
+        <pre><code>{
+  "sources": [
+    { "id": "nmbs", "name": "NMBS / SNCB", "manifest": "nmbs/manifest.jsonld" }
+  ]
+}</code></pre>
+        <p>
+          The loader supports LC <code>schemaVersion: '2-alpha'</code>, Arrow
+          IPC files, IRI identifiers, regional page lists, scheduled pagination
+          and redirect pagination. Relative links resolve against response URLs.
+          Tables and pages must share the manifest's release ID. Cross-origin
+          publishers must enable CORS.
+        </p>
+        <p>
+          Routing uses scheduled data. GTFS Realtime updates, linked-trip
+          transfers (types 4/5), and shapes are not implemented. Linked-trip
+          transfers are rejected explicitly; transfer overrides between
+          different stations are ignored. Walking uses
+          straight-line distance and does not model streets, accessibility or
+          barriers.
+        </p>
+        <p>
+          Read the
+          <a href="https://linkedconnections.org/specification/2-0-alpha"
+            >LC 2.0-alpha draft</a
+          >
+          for the manifest and table schemas, and the
+          <a href="https://github.com/iRail/planner#readme">README</a> for
+          development, test provenance and GitHub Pages setup.
+        </p>
+      </section>
+    </main>
+
+    <script type="module" src="./main.mjs"></script>
+  </body>
+</html>
