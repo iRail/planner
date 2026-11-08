@@ -1,5 +1,10 @@
 import { networkColor } from "./planner-identifiers.mjs";
-import { readConnectionBatches, PageCache, timeAt } from "./planner-data.mjs";
+import {
+  readConnectionBatches,
+  PageCache,
+  timeAt,
+  lowerBound,
+} from "./planner-data.mjs";
 import { buildNetwork, WALK_SPEED } from "./planner-network.mjs";
 import { createProfileSearch } from "./planner-profile.mjs";
 import { createIsochroneSearch } from "./planner-isochrone.mjs";
@@ -11,6 +16,7 @@ import {
   connectionPages,
   validateSchema,
 } from "./lc-timetable.mjs";
+import { buildStations, loadStationRows } from "./irail-stations.mjs";
 
 export function createPlanner(
   { tableFromIPC, RecordBatchReader },
@@ -423,11 +429,72 @@ export function createPlanner(
     return result;
   }
 
+  /**
+   * Visit every connection of one source that departs in [from, to), in page
+   * order (departure order within a page). `visit(batch, row)` reads columns
+   * from the batch: `batch.dep[row]` is an offset from `batch.epoch`, so use
+   * `timeAt(batch, "dep", row)` for absolute seconds. Pages come from the same
+   * cache the journey planner uses.
+   */
+  async function scanConnections(source, from, to, visit) {
+    const pages = await connectionPages(source, from, to, readPage);
+    const jobs = [];
+    const seen = new Set();
+    for (const job of pages) {
+      if (job.maxDepartureTime < from || job.minDepartureTime >= to) continue;
+      const key = `${job.url}\n${job.region ?? ""}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      jobs.push(job);
+    }
+    const loaded = await Promise.all(jobs.map((job) => readPage(job)));
+    let scanned = 0;
+    for (const batches of loaded)
+      for (const batch of batches) {
+        const hi = lowerBound(batch, to);
+        for (let row = lowerBound(batch, from); row < hi; row += 1) {
+          scanned += 1;
+          visit(batch, row);
+        }
+      }
+    return { scanned, pages: jobs.length };
+  }
+
+  // iRail extension data (translations, traffic figures) is loaded on first
+  // use. Without it, stations fall back to the timetable's own stop labels.
+  const directories = new WeakMap();
+  function stationDirectory(source) {
+    if (!directories.has(source))
+      directories.set(
+        source,
+        (async () => {
+          const rows = await loadStationRows(source.manifestUrl, {
+            fetch: fetcher,
+            tableFromIPC,
+            manifest: source.manifest,
+          }).catch(() => null);
+          const stations = buildStations({
+            rows: rows ?? [],
+            ids: source.stops.iri,
+            names: source.stops.name,
+            searchable: source.stopFamily.searchable,
+            lat: source.stops.lat,
+            lon: source.stops.lon,
+          });
+          stations.hasTranslations = rows !== null;
+          return stations;
+        })(),
+      );
+    return directories.get(source);
+  }
+
   return {
     discoverSources,
     loadSource,
     loadSmallTable,
     planJourneys,
     planIsochrone,
+    scanConnections,
+    stationDirectory,
   };
 }

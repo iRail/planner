@@ -25,7 +25,8 @@
       </p>
       <nav class="site-nav" aria-label="Main navigation">
         <a href="#playground">Playground</a><a href="#quickstart">Quick start</a
-        ><a href="#api">API</a><a href="#data">Data format</a
+        ><a href="#api">API</a><a href="#irail-api">iRail calls</a
+        ><a href="#data">Data format</a
         ><a href="./irail.html">iRail API comparison</a><a href="https://github.com/iRail/planner">Source on GitHub</a>
       </nav>
       <section class="panel" id="playground" aria-label="Timetable selection">
@@ -351,8 +352,10 @@ client.close();</code></pre>
           <code>windowMode: 'adaptive'</code> is the default: find the earliest
           arrival in 24 hours, then search a window twice that elapsed time,
           capped at 24 hours. Use <code>'full'</code> to search the whole day.
-          Results contain up to six nondominated alternatives; later or slower
-          departures outside the adaptive window may be excluded.
+          A search returns up to six nondominated alternatives; later or slower
+          departures outside the adaptive window may be excluded. Pass
+          <code>minOptions</code> to keep searching later departures until that
+          many are found.
         </p>
         <p>
           Ride legs expose the publisher's <code>tripIri</code>,
@@ -361,6 +364,82 @@ client.close();</code></pre>
           <code>alightStopIri</code>. Times are always seconds, not JavaScript
           milliseconds. Calls on a planner instance run sequentially and reuse
           its connection cache.
+        </p>
+      </section>
+      <section class="docs panel" id="irail-api">
+        <h2>iRail API calls</h2>
+        <p>
+          The planner also offers the features of the
+          <a href="https://docs.irail.be">iRail API</a>, answered from the
+          scheduled timetable, as ordinary JavaScript: times are
+          <code>Date</code>s, numbers are numbers, lists are arrays and what is
+          unknown is <code>null</code>. They are methods of
+          <code>Planner</code> and <code>PlannerClient</code>.
+        </p>
+        <pre><code>await planner.init();
+const board = await planner.liveboard({
+  station: 'Gent-Sint-Pieters', time: new Date(), language: 'nl',
+});
+const { vehicle, stops } = await planner.vehicle({ id: 'BE.NMBS.IC508' });
+const connections = await planner.connections({
+  from: 'Gent-Sint-Pieters', to: 'Liège-Guillemins',
+});</code></pre>
+        <table>
+          <thead>
+            <tr>
+              <th>Call</th>
+              <th>Behavior</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>stations({ language })</code></td>
+              <td>Every station, labelled in nl, fr, en or de.</td>
+            </tr>
+            <tr>
+              <td><code>liveboard({ station, time, type })</code></td>
+              <td>
+                The hour from <code>time</code>; departures name the
+                <code>destination</code>, arrivals the <code>origin</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>connections({ from, to, time, limit })</code></td>
+              <td>
+                Six connections by default (at most 12), searching past the
+                window until found; one leg per vehicle, with the stops in
+                between.
+              </td>
+            </tr>
+            <tr>
+              <td><code>vehicle({ id, date })</code></td>
+              <td>
+                All stops of a train, for example <code>BE.NMBS.IC508</code>.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>composition()</code>, <code>disturbances()</code>,
+                <code>occupancyFeedback()</code>
+              </td>
+              <td>
+                <strong>Not supported yet.</strong> They exist, but reject with
+                a <code>NotSupportedError</code> (status 501): their data comes
+                from sources the planner does not read.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          A station is an id, a name in any language, or a station returned by
+          an earlier call. Scheduled data only: <code>delay</code> is 0,
+          <code>canceled</code> is <code>false</code> and
+          <code>platform</code> is <code>null</code>.
+          <code>connections</code> does not support
+          <code>arriveBy: true</code> or <code>vehicles</code> other than
+          <code>all</code> yet. Errors are <code>IrailApiError</code>s with the
+          HTTP status the iRail API would use (400 bad parameter, 404 unknown
+          station or train).
         </p>
       </section>
       <section class="docs panel" id="data">

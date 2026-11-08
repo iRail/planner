@@ -8,7 +8,9 @@
 An ESM npm library for journey planning over **Linked Connections 2.0-alpha**
 (`schemaVersion: "2-alpha"`) in Node.js and modern browsers. It scans Apache Arrow
 connection pages locally, supports multiple networks and walking, and returns
-journey alternatives with publisher-provided IRIs.
+journey alternatives with publisher-provided IRIs. It also answers the familiar
+[iRail API](https://docs.irail.be) calls (stations, liveboard, connections,
+vehicle) from the same data; see [iRail API calls](#irail-api-calls).
 
 [Playground and documentation](https://irail.github.io/planner/) ·
 [iRail API comparison](https://irail.github.io/planner/irail.html) ·
@@ -97,7 +99,7 @@ separate instances for independent concurrent workloads.
 | `await planner.init(dataUrl?)`                      | Source metadata, stop IRIs/names/coordinates, searchable station indices, release ID, timezone and coverage. Call again to load a new release.        |
 | `await planner.plan(query, onProgress?)`            | `{ found, options, totalOptions, scanned, window, diagnostics }`. Each option has `departure`, `arrival`, `transfers` and `legs`.                     |
 | `await planner.isochrone(query, onProgress?)`       | `{ found, noAccess, origin, points, maxWalkMeters, scanned, pages, diagnostics }`. Points include coordinates, names, networks and `durationSeconds`. |
-| `await planner.request(type, payload, onProgress?)` | The underlying `init`, `plan` or `isochrone` message protocol, also used by `PlannerClient`.                                                          |
+| `await planner.request(type, payload, onProgress?)` | The underlying message protocol (`init`, `plan`, `isochrone` and the iRail calls), also used by `PlannerClient`.                                      |
 
 Journey queries require `origin`, `destination` and `departureAfter`. Optional
 `sourceIds` selects active networks; omitting it uses all loaded networks.
@@ -123,6 +125,92 @@ Walk legs include endpoint references, times and distance in meters.
 The lower-level `@irail/planner/core` entry exports `createPlanner(arrow, options)`
 for callers managing loaded source objects and page loaders themselves. Most
 applications should use the main entry or the browser worker client.
+
+## iRail API calls
+
+The planner also offers the features of the [iRail API](https://docs.irail.be),
+answered from the scheduled timetable, as ordinary JavaScript: times are `Date`s
+(or epoch milliseconds when you pass them in), numbers are numbers, lists are
+arrays and what is unknown is `null`. They are methods of `Planner` and, in the
+browser, of `PlannerClient`.
+
+```js
+const planner = createPlanner({
+  dataUrl: "https://irail.github.io/iRail-cdn/manifest.jsonld",
+});
+await planner.init();
+
+// The hour of departures at a station.
+const board = await planner.liveboard({
+  station: "Gent-Sint-Pieters", // a name in any language, an id, or a Station
+  time: new Date("2026-11-09T09:00:00+01:00"), // default: now
+  language: "nl",
+});
+for (const { time, vehicle, destination } of board.entries)
+  console.log(time, vehicle.name, destination.name);
+
+// A train overview for one day.
+const { vehicle, stops } = await planner.vehicle({
+  id: "BE.NMBS.IC508",
+  date: new Date("2026-11-09T12:00:00Z"),
+});
+console.log(vehicle.name, stops.map((stop) => stop.station.name));
+
+// Journeys, six by default: one leg per vehicle.
+const connections = await planner.connections({
+  from: "Gent-Sint-Pieters",
+  to: "Liège-Guillemins",
+  time: new Date("2026-11-09T08:30:00+01:00"),
+});
+for (const { departure, arrival, transfers, legs } of connections)
+  console.log(departure, arrival, transfers, legs.map((leg) => leg.vehicle?.name));
+```
+
+| Call                                        | iRail API                  | Returns and notes                                                                                                                                                            |
+| ------------------------------------------- | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stations({ language })`                    | `GET /stations/`           | `Station[]`: `id`, `uri`, `name` (in `language`: `nl`, `fr`, `en`, `de`; default `en`), `standardName`, `latitude`, `longitude`.                                              |
+| `liveboard({ station, time, type })`        | `GET /liveboard/`          | `{ station, type, entries }` for the hour from `time`. `type` is `departure` (default) or `arrival`. Entries have `time`, `vehicle`, `platform` and `destination` or `origin`. |
+| `connections({ from, to, time, limit })`    | `GET /connections/`        | `Connection[]` (default 6, at most 12), continuing past the search window until it has them: `departure`, `arrival`, `duration` (s), `transfers` and `legs`.                  |
+| `vehicle({ id, date })`                     | `GET /vehicle/`            | `{ vehicle, stops }` for a train such as `BE.NMBS.IC508` or `IC508`, on the Belgian day of `date`. Stops have `arrival` and `departure`.                                       |
+| `composition({ vehicle })`                  | `GET /composition/`        | **Not supported yet:** rejects with a `NotSupportedError`. The data comes from a source the planner does not read.                                                            |
+| `disturbances()`                            | `GET /disturbances/`       | **Not supported yet**, same reason (service alerts).                                                                                                                          |
+| `occupancyFeedback({ ... })`                | `POST /feedback/occupancy` | **Not supported yet:** the planner does not send reports anywhere.                                                                                                            |
+
+A `station` or `from`/`to` is a station id (`BE.NMBS.008892007`), URI or number, a
+name in any language, or a `Station` returned by an earlier call. A connection leg is
+`{ type: "ride" | "walk", from, to, vehicle, direction, stops, distanceMeters }`;
+`from` and `to` hold the `station`, `time`, `platform`, `delay` (seconds) and
+`canceled`, and a ride's `stops` are the stops in between. `connections` also takes
+`maxWalkMeters` (default 0: no walking between stations).
+
+The timetable is scheduled data, so for now `delay` is 0, `canceled` is `false` and
+`platform` is `null`. Station labels, translations and the traffic figures that rank
+station search results come from the iRail CDN's `stations.arrow` extension, loaded on
+first use; without it the timetable's own stop names are used. A leg's `direction` is the
+timetable's published headsign.
+
+Not yet supported inside supported calls: `connections` with `arriveBy: true` (the
+planner searches forward from a time) and `vehicles` other than `all`. They reject with
+a `NotSupportedError` too.
+
+Errors are `IrailApiError`s with the HTTP `status` the iRail API would use: 400 for a
+missing or malformed parameter, 404 for an unknown station or train. A
+`NotSupportedError` is a subclass with status 501 and the `call` that was made. Both are
+exported:
+
+```js
+import { IrailApiError, NotSupportedError } from "@irail/planner";
+
+try {
+  await planner.composition({ vehicle: "IC508" });
+} catch (error) {
+  if (error instanceof NotSupportedError) console.log(error.call, error.status); // composition 501
+}
+```
+
+The same holds for the journey search: `plan` takes `minOptions` to keep searching later
+departures (for up to two days) until that many alternatives are found, where a single
+search can return fewer when its window is short. Its own times stay UTC epoch seconds.
 
 ## Browser workers
 

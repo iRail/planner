@@ -1,5 +1,74 @@
+import { createIrailApi } from "./irail-api.mjs";
+import { IrailApiError } from "./irail-errors.mjs";
+
+const IRAIL_CALLS = new Set(["stations", "liveboard", "connections", "vehicle"]);
+const FILL_HORIZON = 2 * 86400; // how far past the request to look for more options
+const FILL_ROUNDS = 8;
+
 export function createPlannerService(planner) {
   let sources = [];
+  const irail = createIrailApi(planner);
+
+  // Journeys with route and stop identifiers resolved. With `minOptions`, a
+  // search that found fewer alternatives continues after the last departure
+  // until enough are found or nothing more departs within two days.
+  async function planLabeled(payload, selected, onProgress) {
+    const { minOptions = 0, ...query } = payload;
+    const search = (departureAfter) =>
+      planner.planJourneys({
+        ...query,
+        departureAfter,
+        sources: selected,
+        onProgress,
+      });
+    let result = await search(query.departureAfter);
+    let extended = false;
+    for (
+      let round = 0;
+      round < FILL_ROUNDS &&
+      result.found &&
+      result.options.length < minOptions;
+      round += 1
+    ) {
+      const cursor = result.options.at(-1).departure + 1;
+      if (cursor >= query.departureAfter + FILL_HORIZON) break;
+      const next = await search(cursor);
+      if (!next.options.length) break;
+      extended = true;
+      result = {
+        ...result,
+        options: [...result.options, ...next.options],
+        totalOptions: result.totalOptions + next.totalOptions,
+        scanned: result.scanned + next.scanned,
+        window: {
+          ...result.window,
+          to: Math.max(result.window.to, next.window.to),
+        },
+      };
+    }
+    // A search that had to continue returns the number asked for, not a few more.
+    if (result.options.length > minOptions && minOptions > 0 && extended)
+      result = { ...result, options: result.options.slice(0, minOptions) };
+    onProgress?.({ phase: "labels" });
+    for (const option of result.options)
+      for (const leg of option.legs) {
+        if (leg.kind !== "ride") continue;
+        const source = selected.find((source) => source.id === leg.sourceId);
+        const trip = source.tables.trips.get(leg.trip);
+        const route = source.tables.routes.get(trip.routeIdx);
+        Object.assign(leg, {
+          routeName: route.shortName || route.longName || "",
+          routeType: route.routeType,
+          headsign: trip.headsign || "",
+          tripIri: trip.iri,
+          routeIri: route.iri,
+          boardStopIri: source.stops.iri[leg.boardStop],
+          alightStopIri: source.stops.iri[leg.alightStop],
+        });
+      }
+    return result;
+  }
+
   return async function handle(type, payload, onProgress) {
     if (type === "init") {
       const descriptors = await planner.discoverSources(payload?.dataUrl);
@@ -32,6 +101,16 @@ export function createPlannerService(planner) {
         },
         stopFamily: { searchable: source.stopFamily.searchable },
       }));
+    }
+    if (IRAIL_CALLS.has(type)) {
+      if (!sources.length)
+        throw new IrailApiError(400, "Initialize the planner before querying");
+      return irail[type](
+        sources,
+        payload ?? {},
+        payload?.now ?? Date.now() / 1000,
+        planLabeled,
+      );
     }
     if (type !== "plan" && type !== "isochrone")
       throw new Error(`Unknown planner request: ${type}`);
@@ -73,28 +152,6 @@ export function createPlannerService(planner) {
         diagnostics: result.diagnostics,
       };
     }
-    const result = await planner.planJourneys({
-      ...payload,
-      sources: selected,
-      onProgress,
-    });
-    onProgress?.({ phase: "labels" });
-    for (const option of result.options)
-      for (const leg of option.legs) {
-        if (leg.kind !== "ride") continue;
-        const source = selected.find((source) => source.id === leg.sourceId);
-        const trip = source.tables.trips.get(leg.trip);
-        const route = source.tables.routes.get(trip.routeIdx);
-        Object.assign(leg, {
-          routeName: route.shortName || route.longName || "",
-          routeType: route.routeType,
-          headsign: trip.headsign || "",
-          tripIri: trip.iri,
-          routeIri: route.iri,
-          boardStopIri: source.stops.iri[leg.boardStop],
-          alightStopIri: source.stops.iri[leg.alightStop],
-        });
-      }
-    return result;
+    return planLabeled(payload, selected, onProgress);
   };
 }

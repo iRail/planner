@@ -1,8 +1,10 @@
 import { tableFromIPC, RecordBatchReader } from "apache-arrow";
 import { createPlanner as createPlannerCore } from "./planner-core.mjs";
 import { createPlannerService } from "./planner-service.mjs";
+import { addIrailMethods } from "./irail-methods.mjs";
 
 export { LC_VERSION } from "./lc-timetable.mjs";
+export { IrailApiError, NotSupportedError } from "./irail-errors.mjs";
 
 /** A planner instance owns its reference tables and bounded connection cache. */
 export class Planner {
@@ -45,6 +47,8 @@ export class Planner {
     );
   }
 }
+
+addIrailMethods(Planner.prototype);
 
 export function createPlanner(options) {
   return new Planner(options);

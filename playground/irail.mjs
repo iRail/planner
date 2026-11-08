@@ -607,6 +607,8 @@ async function search() {
       departureAfter,
       maxWalkMeters,
       windowMode: els.window.value,
+      // Like the API's six results: keep searching past the window until found.
+      minOptions: 6,
       sourceIds: [state.source.id],
     };
     // Sequential on purpose: concurrent runs would distort each other's timing.

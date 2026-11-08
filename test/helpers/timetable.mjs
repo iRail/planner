@@ -1,17 +1,53 @@
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import * as arrow from "apache-arrow";
 import { encodeTable } from "../../scripts/arrow-table.mjs";
 
 export const start = Date.parse("2026-11-08T08:00:00Z") / 1000;
 export const releaseId = "test-release";
 export const iri = (kind, id) => `https://example.org/${kind}/${id}`;
 
+// Rows of the iRail `stations.arrow` extension, written next to the tables and
+// linked from the manifest's `irail:extensions`.
+async function writeStationExtension(directory, rows) {
+  const columns = {
+    name: [],
+    alternativeFr: [],
+    alternativeNl: [],
+    alternativeDe: [],
+    alternativeEn: [],
+    lat: [],
+    lon: [],
+    avgStopTimes: [],
+    iri: [],
+  };
+  for (const row of rows)
+    for (const column of Object.keys(columns))
+      columns[column].push(row[column] ?? null);
+  const table = arrow.tableFromArrays(columns);
+  const batch = new arrow.RecordBatch(
+    new arrow.Schema(table.schema.fields, new Map([["releaseId", releaseId]])),
+    table.batches[0].data,
+  );
+  await writeFile(
+    path.join(directory, "stations.arrow"),
+    arrow.tableToIPC(new arrow.Table(batch), "file"),
+  );
+  await writeFile(
+    path.join(directory, "irail.json"),
+    JSON.stringify({ files: { stations: { path: "stations.arrow" } } }),
+  );
+}
+
 export async function timetable({
   connections,
   transfers = [],
   manifest: extra = {},
   regions = true,
+  stopIris,
+  tripShortNames = [],
+  stationRows,
 } = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), "lc-planner-"));
   const stops = ["Origin", "Interchange", "Destination", "Disconnected"].map(
@@ -21,14 +57,18 @@ export async function timetable({
       lon: 4,
       parentIdx: -1,
       minTransferTime: 0,
-      iri: iri("stops", i),
+      iri: stopIris?.[i] ?? iri("stops", i),
       regionIri: regions ? iri("regions", i) : null,
     }),
   );
-  const trips = Array.from({ length: 4 }, (_, i) => ({
+  const tripCount = Math.max(
+    4,
+    ...(connections ?? []).map((row) => row.tripIdx + 1),
+  );
+  const trips = Array.from({ length: tripCount }, (_, i) => ({
     routeIdx: 0,
     headsign: "Destination",
-    shortName: null,
+    shortName: tripShortNames[i] ?? null,
     iri: iri("trips", i),
   }));
   const routes = [
@@ -79,6 +119,7 @@ export async function timetable({
       arrivalStopSequence: 2,
     },
   ];
+  if (stationRows) await writeStationExtension(directory, stationRows);
   const pages = [];
   await mkdir(path.join(directory, "pages"));
   for (const [i, row] of rows.entries()) {
@@ -130,6 +171,7 @@ export async function timetable({
     routes: "routes.arrow",
     transfers: "transfers.arrow",
     connections: { "@type": "ConnectionCollection", pages },
+    ...(stationRows ? { "irail:extensions": { "@id": "irail.json" } } : {}),
     ...extra,
   };
   await writeFile(

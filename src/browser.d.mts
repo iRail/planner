@@ -1,7 +1,14 @@
-import type { PlannerRequests } from "./index.mjs";
-export class PlannerClient implements PlannerRequests {
+import type { IrailApi, PlannerRequests } from "./index.mjs";
+export class PlannerClient implements PlannerRequests, IrailApi {
   constructor(worker: Worker);
   request: PlannerRequests["request"];
+  stations: IrailApi["stations"];
+  liveboard: IrailApi["liveboard"];
+  connections: IrailApi["connections"];
+  vehicle: IrailApi["vehicle"];
+  composition: IrailApi["composition"];
+  disturbances: IrailApi["disturbances"];
+  occupancyFeedback: IrailApi["occupancyFeedback"];
   close(): void;
 }
 export function createPlannerWorker(): Worker;

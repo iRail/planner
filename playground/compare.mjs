@@ -2,66 +2,17 @@
 // mapping, Brussels-time conversion, normalising both result formats into one
 // journey shape, and diffing the two result sets. No DOM and no network.
 
-export const TIME_ZONE = "Europe/Brussels";
+import { TIME_ZONE, zonedParts, zonedToEpoch } from "../src/irail-time.mjs";
+
+export { TIME_ZONE };
 export const API_BASE = "https://api.irail.be/v1";
 
 const asArray = (value) => (value ? (Array.isArray(value) ? value : [value]) : []);
 
-/**
- * The numeric NMBS/SNCB station number shared by the planner's stop IRIs
- * (`.../stops/S8892007`, `.../stops/8892007_3`) and the iRail API's station ids
- * (`BE.NMBS.008892007`, `http://irail.be/stations/NMBS/008892007`).
- * Returns a string without leading zeros, or null when there is none.
- */
-export function stationKey(identifier) {
-  if (typeof identifier !== "string") return null;
-  const match =
-    /\/stops\/S?(\d+)(?:_[^/]*)?$/u.exec(identifier) ||
-    /(?:BE\.NMBS\.|\/stations\/NMBS\/)0*(\d+)$/u.exec(identifier);
-  return match ? String(Number(match[1])) : null;
-}
+import { apiStationId, stationKey } from "../src/irail-stations.mjs";
 
-/** The iRail API's station identifier for a station key. */
-export const apiStationId = (key) => `BE.NMBS.${String(key).padStart(9, "0")}`;
-
-/** Wall-clock parts of an instant in a time zone. */
-export function zonedParts(epochSeconds, timeZone = TIME_ZONE) {
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-    timeZone,
-  }).formatToParts(new Date(epochSeconds * 1000));
-  const value = Object.fromEntries(
-    parts.filter((p) => p.type !== "literal").map((p) => [p.type, Number(p.value)]),
-  );
-  return {
-    year: value.year,
-    month: value.month,
-    day: value.day,
-    hour: value.hour,
-    minute: value.minute,
-  };
-}
-
-/** The instant (UTC epoch seconds) at which a time zone's clock shows the given time. */
-export function zonedToEpoch(
-  { year, month, day, hour, minute },
-  timeZone = TIME_ZONE,
-) {
-  const wanted = Date.UTC(year, month - 1, day, hour, minute);
-  let guess = wanted;
-  // Correct by the offset the zone actually has at the guessed instant; two
-  // rounds settle across a DST change.
-  for (let round = 0; round < 2; round += 1) {
-    const shown = zonedParts(guess / 1000, timeZone);
-    guess += wanted - Date.UTC(shown.year, shown.month - 1, shown.day, shown.hour, shown.minute);
-  }
-  return guess / 1000;
-}
+export { apiStationId, stationKey };
+export { zonedParts, zonedToEpoch };
 
 const pad = (n, width = 2) => String(n).padStart(width, "0");
 

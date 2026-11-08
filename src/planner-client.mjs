@@ -1,3 +1,6 @@
+import { addIrailMethods } from "./irail-methods.mjs";
+import { IrailApiError } from "./irail-errors.mjs";
+
 // Only stop-search metadata and completed journeys cross the worker boundary.
 export class PlannerClient {
   constructor(worker) {
@@ -12,7 +15,12 @@ export class PlannerClient {
         return;
       }
       this.pending.delete(data.id);
-      if (data.type === "error") request.reject(new Error(data.error));
+      if (data.type === "error")
+        request.reject(
+          data.status
+            ? new IrailApiError(data.status, data.error)
+            : new Error(data.error),
+        );
       else request.resolve(data.result);
     });
     const fail = (event) => {
@@ -48,3 +56,5 @@ export class PlannerClient {
     this.worker.terminate();
   }
 }
+
+addIrailMethods(PlannerClient.prototype);

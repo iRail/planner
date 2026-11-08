@@ -1,7 +1,7 @@
 {
   "name": "@irail/planner",
   "version": "0.1.0-alpha.0",
-  "description": "Journey planning in Node.js and browsers over Linked Connections 2.0-alpha",
+  "description": "Journey planning and iRail API calls (stations, liveboard, connections, vehicle) in Node.js and browsers over Linked Connections 2.0-alpha",
   "type": "module",
   "main": "./src/index.mjs",
   "types": "./src/index.d.mts",
@@ -27,6 +27,8 @@
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "test:coverage": "node --experimental-test-coverage --test test/*.test.mjs",
+    "check:package": "node scripts/check-package.mjs",
+    "prepublishOnly": "npm test",
     "dev": "node scripts/build-demo.mjs && vite --host 127.0.0.1",
     "build": "npm run build:playground",
     "build:playground": "node scripts/build-demo.mjs && vite build",

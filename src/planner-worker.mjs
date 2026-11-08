@@ -37,7 +37,12 @@ self.addEventListener("message", ({ data: { id, type, payload } }) => {
       });
       self.postMessage({ id, type: "result", result });
     } catch (error) {
-      self.postMessage({ id, type: "error", error: error.message });
+      self.postMessage({
+        id,
+        type: "error",
+        error: error.message,
+        status: error.status,
+      });
     }
   });
 });

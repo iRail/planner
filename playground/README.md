@@ -59,10 +59,7 @@ manifest's `irail:extensions` link and `irail.json`), because the LC `stops.arro
 has a single label per stop. `irail/stations.mjs` ports irail.be's station search:
 text in any language matches, the language picker chooses the displayed label,
 and results rank exact > word prefix > prefix > partial, then by `avgStopTimes`
-descending. Covered by `test/stations.test.mjs`. It needs the iRail CDN data
-and CORS access to `api.irail.be`. `irail/irail-be.css`, `irail/logo.svg` and
-`irail/date-time.mjs` are copied from the irail.be repository; `irail/compare.css`
-adds the comparison styles.
+descending. Covered by `test/stations.test.mjs`.
 
 The quick start, API reference and format notes in `index.html` are the hosted
 library documentation. Keep these and the repository README consistent.
