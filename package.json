@@ -1,6 +1,6 @@
 {
   "name": "@irail/planner",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Journey planning and iRail API calls (stations, liveboard, connections, vehicle) in Node.js and browsers over Linked Connections 2.0-alpha",
   "type": "module",
   "main": "./src/index.mjs",
