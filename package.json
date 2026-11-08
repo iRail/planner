@@ -28,6 +28,7 @@
     "test": "node --test test/*.test.mjs",
     "test:coverage": "node --experimental-test-coverage --test test/*.test.mjs",
     "check:package": "node scripts/check-package.mjs",
+    "build:proto": "npx --yes --package protobufjs-cli@2.7.1 pbjs -t static-module -w es6 --no-encode --no-create --no-verify --no-convert --no-delimited --no-comments -o src/gtfs-realtime.mjs proto/gtfs-realtime.proto",
     "prepublishOnly": "npm test",
     "dev": "node scripts/build-demo.mjs && vite --host 127.0.0.1",
     "build": "npm run build:playground",
@@ -59,6 +60,7 @@
   ],
   "dependencies": {
     "apache-arrow": "^21.2.0",
+    "protobufjs": "^8.8.1",
     "uri-templates": "^0.2.0"
   },
   "devDependencies": {

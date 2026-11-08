@@ -389,12 +389,20 @@ npm run dev                 # http://localhost:5173
 npm run build:playground    # static site: dist/playground/
 npm run preview             # preview the production build
 npm pack --dry-run          # inspect the library package
+npm run build:proto         # regenerate src/gtfs-realtime.mjs from proto/gtfs-realtime.proto
 ```
 
 The library lives in `src/`, tests in `test/`, and the interactive demo plus hosted
 API documentation in [`playground/`](playground/README.md). `npm run build` is an
 alias for `build:playground`; the library itself ships native ESM source. Only
 `src/`, README and LICENSE enter the npm tarball.
+
+The GTFS Realtime feed is decoded with [protobufjs](https://github.com/protobufjs/protobuf.js)
+(a runtime dependency). `src/gtfs-realtime.mjs` is code generated from the subset of the
+official `.proto` kept in `proto/`; generated code needs only protobufjs's small runtime
+and builds nothing at run time, so it also works under strict content security policies
+and on runtimes that forbid `eval`. Edit the `.proto` and run `npm run build:proto` to
+read more fields.
 
 The playground loads the iRail CDN's live LC 2.0-alpha timetable
 (`https://irail.github.io/iRail-cdn/manifest.jsonld`, NMBS/SNCB open data, scheduled

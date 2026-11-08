@@ -165,16 +165,22 @@ test("the decoder reads delays, times, relationships and negative numbers", () =
   assert.equal(feed.updates[2].startDate, undefined);
 });
 
-test("the decoder skips deleted entities and rejects truncated input", () => {
-  assert.deepEqual(decodeTripUpdates(new Uint8Array()), {
-    timestamp: undefined,
+test("the decoder rejects empty, foreign and truncated input", () => {
+  for (const body of [
+    new Uint8Array(),
+    new TextEncoder().encode("<html>Service Unavailable</html>"),
+    new TextEncoder().encode('{"error":"rate limited"}'),
+  ])
+    assert.throws(() => decodeTripUpdates(body), /GTFS Realtime/u);
+  assert.deepEqual(decodeTripUpdates(encodeFeed({ timestamp: 7 })), {
+    timestamp: 7,
     updates: [],
   });
   const bytes = encodeFeed({
     timestamp: 5,
     trips: [{ tripId: "x", startDate: 20261108 }],
   });
-  assert.throws(() => decodeTripUpdates(bytes.subarray(0, bytes.length - 3)), /Truncated/u);
+  assert.throws(() => decodeTripUpdates(bytes.subarray(0, bytes.length - 3)), /GTFS Realtime/u);
 });
 
 test("the manifest's GtfsRealtimeFeed entries are found, other kinds ignored", () => {
@@ -486,6 +492,13 @@ test("a feed that cannot be read rejects and leaves the last data in use", async
   await assert.rejects(planner.refreshRealtime(), /HTTP 404/u);
   const { options } = await journeys(planner, 0, 1);
   assert.equal(options[0].legs[0].boardDelay, 300);
+});
+
+test("an empty response does not wipe the real-time data already loaded", async (t) => {
+  const { planner, feedFile } = await setup(t, { feed: { trips: [lateTrip(300)] } });
+  await writeFile(feedFile, new Uint8Array());
+  await assert.rejects(planner.refreshRealtime(), /GTFS Realtime/u);
+  assert.equal((await journeys(planner, 0, 1)).options[0].legs[0].boardDelay, 300);
 });
 
 test("a feed that fails at start-up does not stop the planner starting", async (t) => {
