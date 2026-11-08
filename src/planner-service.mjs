@@ -56,7 +56,27 @@ export function createPlannerService(planner) {
         const source = selected.find((source) => source.id === leg.sourceId);
         const trip = source.tables.trips.get(leg.trip);
         const route = source.tables.routes.get(trip.routeIdx);
+        // Times are already real-time adjusted; these say by how much, and
+        // where the feed names a platform.
+        const board = planner.realtimeStop?.(
+          source,
+          leg.trip,
+          leg.serviceDate,
+          leg.boardStop,
+          "dep",
+        );
+        const alight = planner.realtimeStop?.(
+          source,
+          leg.trip,
+          leg.serviceDate,
+          leg.alightStop,
+          "arr",
+        );
         Object.assign(leg, {
+          boardDelay: board?.delay ?? 0,
+          alightDelay: alight?.delay ?? 0,
+          boardPlatform: board?.platform ?? null,
+          alightPlatform: alight?.platform ?? null,
           routeName: route.shortName || route.longName || "",
           routeType: route.routeType,
           headsign: trip.headsign || "",
@@ -81,6 +101,10 @@ export function createPlannerService(planner) {
       if (new Set(loaded.map((source) => source.id)).size !== loaded.length)
         throw new Error("Source IDs must be unique");
       sources = loaded;
+      // Real-time data is on unless asked otherwise, and never blocks a start.
+      planner.resetRealtime?.();
+      if (payload?.realtime !== false)
+        await planner.refreshRealtime?.(sources).catch(() => {});
       return sources.map((source) => ({
         id: source.id,
         name: source.name,
@@ -101,6 +125,11 @@ export function createPlannerService(planner) {
         },
         stopFamily: { searchable: source.stopFamily.searchable },
       }));
+    }
+    if (type === "realtime") {
+      if (!sources.length)
+        throw new Error("Initialize the planner before querying");
+      return planner.refreshRealtime(sources);
     }
     if (IRAIL_CALLS.has(type)) {
       if (!sources.length)

@@ -54,8 +54,8 @@
             >iRail CDN</a
           >
           timetable: NMBS/SNCB open data converted to Linked Connections
-          2.0-alpha. The format is a draft and the data is scheduled service
-          only, without realtime. Enter your own LC alpha manifest URL to try
+          2.0-alpha, with the NMBS/SNCB GTFS Realtime feed for delays and
+          cancellations. The format is a draft. Enter your own LC alpha manifest URL to try
           another publisher, or load the sample, which uses invented services
           on 8 November 2026 and is not a real timetable.
         </p>
@@ -162,6 +162,17 @@
             </form>
 
             <div id="status"></div>
+            <div id="live-status" class="live-status" hidden>
+              <span class="live-dot" aria-hidden="true"></span>
+              <span id="live-text" role="status" aria-live="polite"></span>
+              <label class="live-toggle">
+                <input type="checkbox" id="live-toggle" checked />
+                Update automatically
+              </label>
+              <button type="button" class="live-now" id="live-now">
+                Check now
+              </button>
+            </div>
             <div id="results"></div>
           </div>
           <aside class="route-map-panel" aria-label="Route map">
@@ -368,7 +379,7 @@ client.close();</code></pre>
         <p>
           The planner also offers the features of the
           <a href="https://docs.irail.be">iRail API</a>, answered from the
-          scheduled timetable, as ordinary JavaScript: times are
+          timetable and its real-time feed, as ordinary JavaScript: times are
           <code>Date</code>s, numbers are numbers, lists are arrays and what is
           unknown is <code>null</code>. They are methods of
           <code>Planner</code> and <code>PlannerClient</code>.
@@ -429,9 +440,10 @@ const connections = await planner.connections({
         </table>
         <p>
           A station is an id, a name in any language, or a station returned by
-          an earlier call. Scheduled data only: <code>delay</code> is 0,
-          <code>canceled</code> is <code>false</code> and
-          <code>platform</code> is <code>null</code>.
+          an earlier call. A <code>time</code> is the scheduled time and
+          <code>delay</code> (seconds) how late the real-time feed says it is;
+          <code>canceled</code> and <code>platform</code> come from the feed too
+          (<code>null</code> without one).
           <code>connections</code> does not support
           <code>arriveBy: true</code> or <code>vehicles</code> other than
           <code>all</code> yet. Errors are <code>IrailApiError</code>s with the
@@ -459,8 +471,12 @@ const connections = await planner.connections({
           publishers must enable CORS.
         </p>
         <p>
-          Routing uses scheduled data. GTFS Realtime updates, linked-trip
-          transfers (types 4/5), and shapes are not implemented. Linked-trip
+          Real-time delays, cancellations, skipped stops and platforms from a
+          GTFS Realtime feed named in the manifest are applied while
+          connections are read;
+          <code>planner.watchRealtime()</code> polls it every 30 seconds and
+          emits <code>update</code> when it changes. Linked-trip
+          transfers (types 4/5) and shapes are not implemented. Linked-trip
           transfers are rejected explicitly; transfer overrides between
           different stations are ignored. Walking uses
           straight-line distance and does not model streets, accessibility or

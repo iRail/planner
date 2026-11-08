@@ -58,6 +58,7 @@ export function normalizeApiConnection(connection) {
     key: stationKey(info?.id) ?? stationKey(info?.["@id"]),
     name: name || info?.name || "",
     time: seconds(stop.time),
+    delay: seconds(stop.delay),
     platform: stop.platform && stop.platform !== "?" ? stop.platform : undefined,
   });
   const legs = [];
@@ -92,7 +93,12 @@ export function normalizeApiConnection(connection) {
   };
 }
 
-/** `names[stopIdx]` and `ids[stopIdx]` come from the planner's init response. */
+/**
+ * `names[stopIdx]` and `ids[stopIdx]` come from the planner's init response.
+ * The planner's times already include real-time delays; the API reports the
+ * scheduled time next to the delay. Both sides are reduced to scheduled times
+ * plus delays, so journeys compare by the train they take, not by how late it is.
+ */
 export function normalizePlannerJourney(journey, { names, ids }) {
   const endpoint = (ref, time) => {
     const known = ref && ref.stopIdx !== undefined;
@@ -100,14 +106,18 @@ export function normalizePlannerJourney(journey, { names, ids }) {
       key: known ? stationKey(ids[ref.stopIdx]) : null,
       name: known ? names[ref.stopIdx] || ids[ref.stopIdx] : "Your location",
       time,
+      delay: 0,
     };
   };
+  const rides = journey.legs.filter((leg) => leg.kind !== "walk");
+  const departureDelay = rides[0]?.boardDelay ?? 0;
+  const arrivalDelay = rides.at(-1)?.alightDelay ?? 0;
   return {
-    departure: journey.departure,
-    arrival: journey.arrival,
+    departure: journey.departure - departureDelay,
+    arrival: journey.arrival - arrivalDelay,
     transfers: journey.transfers,
-    delay: 0,
-    arrivalDelay: 0,
+    delay: departureDelay,
+    arrivalDelay,
     canceled: false,
     legs: journey.legs.map((leg) =>
       leg.kind === "walk"
@@ -123,12 +133,16 @@ export function normalizePlannerJourney(journey, { names, ids }) {
             from: {
               key: stationKey(leg.boardStopIri),
               name: names[leg.boardStop] || leg.boardStopIri,
-              time: leg.boardTime,
+              time: leg.boardTime - (leg.boardDelay ?? 0),
+              delay: leg.boardDelay ?? 0,
+              platform: leg.boardPlatform ?? undefined,
             },
             to: {
               key: stationKey(leg.alightStopIri),
               name: names[leg.alightStop] || leg.alightStopIri,
-              time: leg.alightTime,
+              time: leg.alightTime - (leg.alightDelay ?? 0),
+              delay: leg.alightDelay ?? 0,
+              platform: leg.alightPlatform ?? undefined,
             },
             label: leg.routeName || "Train",
             headsign: leg.headsign,
@@ -164,7 +178,8 @@ const transfersOnlyIn = (journey, other) => {
  * leave and arrive at the same scheduled instants. Every difference gets a
  * reason, because the two sides answer slightly different questions: the API
  * lists the next few departures (including slower ones), the planner lists
- * Pareto-optimal alternatives, and only the API knows realtime delays.
+ * Pareto-optimal alternatives. Both sides apply realtime delays, from different
+ * feeds, so their delays can differ.
  *
  * `plannerWindow` ({ from, to } in epoch seconds, from the planner result)
  * explains iRail journeys the planner's heuristic search window never reached.
@@ -192,9 +207,14 @@ export function compareJourneys(
         notes.push(
           `same times, other transfer stations (iRail: ${transfersOnlyIn(api, planner)}; planner: ${transfersOnlyIn(planner, api)})`,
         );
+      const apiLate = Math.round((api.arrivalDelay || 0) / 60);
+      const plannerLate = Math.round((planner.arrivalDelay || 0) / 60);
       if (api.canceled) notes.push("canceled in realtime");
-      else if (api.arrivalDelay > 0)
-        notes.push(`${Math.round(api.arrivalDelay / 60)} min late in realtime`);
+      else if (apiLate !== plannerLate)
+        notes.push(
+          `arrival delay differs: iRail +${apiLate} min, planner +${plannerLate} min`,
+        );
+      else if (apiLate > 0) notes.push(`${apiLate} min late in realtime`);
       rows.push({ status: "same", api, planner, notes });
     } else apiLeft.push(api);
   }

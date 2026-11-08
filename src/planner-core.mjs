@@ -17,12 +17,24 @@ import {
   validateSchema,
 } from "./lc-timetable.mjs";
 import { buildStations, loadStationRows } from "./irail-stations.mjs";
+import { decodeTripUpdates } from "./gtfs-rt.mjs";
+import {
+  applyRealtimeToBatches,
+  buildRealtime,
+  realtimeFeeds,
+  stopStatus,
+} from "./realtime.mjs";
 
 export function createPlanner(
   { tableFromIPC, RecordBatchReader },
   { loadPage, cacheBytes, fetch: fetcher = globalThis.fetch } = {},
 ) {
   const cache = new PageCache(cacheBytes);
+  // GTFS Realtime overlays by source id. The cache keeps scheduled pages; the
+  // overlay is applied on the way out and its results are kept until the next
+  // feed update.
+  const realtime = new Map();
+  const overlaid = new Map();
   let previousNetwork;
   let previousSources;
   let previousWalk;
@@ -117,10 +129,76 @@ export function createPlanner(
       if (batches.page?.url && batches.page.url !== request.url)
         cache.set(cacheKey(batches.page.url), batches);
     }
+    const overlay = realtime.get(job.source.id);
+    if (overlay) {
+      const overlayKey = `${key}\n${job.keepCanceled ? 1 : 0}`;
+      if (!overlaid.has(overlayKey))
+        overlaid.set(
+          overlayKey,
+          applyRealtimeToBatches(batches, overlay, {
+            keepCanceled: job.keepCanceled,
+          }),
+        );
+      batches = overlaid.get(overlayKey);
+    }
     return Object.assign(
       batches.map((batch) => ({ ...batch, source: job.source })),
       { page: batches.page },
     );
+  }
+
+  /**
+   * Fetch the GTFS Realtime feeds the sources' manifests advertise and apply
+   * them to every later search. Resolves to one status per source:
+   * `{ sourceId, supported, timestamp, changed, ... }`. `changed` is false
+   * when the feed has not been regenerated since the last call. A failing feed
+   * rejects and leaves the previous overlay in place.
+   */
+  async function refreshRealtime(sources) {
+    const statuses = [];
+    for (const source of sources) {
+      const feeds = realtimeFeeds(source.manifest, source.manifestUrl);
+      if (!feeds.length) {
+        statuses.push({ sourceId: source.id, supported: false, changed: false });
+        continue;
+      }
+      const decoded = await Promise.all(
+        feeds.map(async (feed) => {
+          const response = await fetchResponse(feed.url);
+          return {
+            feed,
+            decoded: decodeTripUpdates(await response.arrayBuffer()),
+          };
+        }),
+      );
+      const next = buildRealtime(source, decoded);
+      const previous = realtime.get(source.id);
+      const changed = !previous || previous.timestamp !== next.timestamp;
+      if (changed) {
+        realtime.set(source.id, next);
+        source.realtimeMargin = next.margin;
+        overlaid.clear();
+      }
+      statuses.push({
+        sourceId: source.id,
+        supported: true,
+        changed,
+        timestamp: (changed ? next : previous).timestamp,
+        ...(changed ? next : previous).stats,
+      });
+    }
+    return statuses;
+  }
+
+  /** Forget all real-time data, for example when sources are loaded again. */
+  function resetRealtime() {
+    realtime.clear();
+    overlaid.clear();
+  }
+
+  /** The overlay's view of one stop of a trip: `{ delay, platform, canceled }` or null. */
+  function realtimeStop(source, trip, serviceDate, stopIdx, kind) {
+    return stopStatus(realtime.get(source.id), trip, serviceDate, stopIdx, kind);
   }
 
   function ensureNetwork(sources, maxWalkMeters) {
@@ -447,7 +525,9 @@ export function createPlanner(
       seen.add(key);
       jobs.push(job);
     }
-    const loaded = await Promise.all(jobs.map((job) => readPage(job)));
+    const loaded = await Promise.all(
+      jobs.map((job) => readPage({ ...job, keepCanceled: true })),
+    );
     let scanned = 0;
     for (const batches of loaded)
       for (const batch of batches) {
@@ -496,5 +576,8 @@ export function createPlanner(
     planIsochrone,
     scanConnections,
     stationDirectory,
+    refreshRealtime,
+    resetRealtime,
+    realtimeStop,
   };
 }

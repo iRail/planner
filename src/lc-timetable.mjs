@@ -169,12 +169,15 @@ function intervalSeconds(duration) {
 // bounds/regions stay conservative; page names are never interpreted as data.
 export async function connectionPages(source, from, to, readPage) {
   const collection = source.manifest.connections;
+  // Real-time delays push connections past the end of their page; the margin
+  // keeps those pages in range of the scans that should still see them.
+  const margin = source.realtimeMargin ?? 0;
   const page = (entry) => ({
     ...entry,
     url: resourceUrl(entry, source.manifestUrl),
     source,
     minDepartureTime: timestamp(entry.minDepartureTime, -Infinity),
-    maxDepartureTime: timestamp(entry.maxDepartureTime, Infinity),
+    maxDepartureTime: timestamp(entry.maxDepartureTime, Infinity) + margin,
   });
   if (Array.isArray(collection.pages)) return collection.pages.map(page);
   if (!collection.searchTemplate)

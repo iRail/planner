@@ -1,5 +1,6 @@
 import { addIrailMethods } from "./irail-methods.mjs";
 import { IrailApiError } from "./irail-errors.mjs";
+import { addRealtimeMethods } from "./realtime-watch.mjs";
 
 // Only stop-search metadata and completed journeys cross the worker boundary.
 export class PlannerClient {
@@ -58,3 +59,4 @@ export class PlannerClient {
 }
 
 addIrailMethods(PlannerClient.prototype);
+addRealtimeMethods(PlannerClient.prototype);

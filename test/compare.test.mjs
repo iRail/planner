@@ -264,6 +264,7 @@ test("identical times with different transfers or realtime delays carry notes", 
       { from: { key: "1" } },
       { from: { key: "3" } },
     ],
+    arrivalDelay: 300,
   });
   const { rows } = compareJourneys([a], [p]);
   assert.equal(rows[0].status, "same");
@@ -275,6 +276,42 @@ test("identical times with different transfers or realtime delays carry notes", 
     compareJourneys([j(1, 2, 0)], [j(1, 2, 2)]).rows[0].notes,
     ["0 vs 2 transfers"],
   );
+});
+
+test("a delay one side does not know about is called out, an agreed delay is not", () => {
+  const notes = (apiDelay, plannerDelay) =>
+    compareJourneys(
+      [j(100, 500, 0, { arrivalDelay: apiDelay })],
+      [j(100, 500, 0, { arrivalDelay: plannerDelay })],
+    ).rows[0].notes;
+  assert.deepEqual(notes(300, 0), ["arrival delay differs: iRail +5 min, planner +0 min"]);
+  assert.deepEqual(notes(0, 120), ["arrival delay differs: iRail +0 min, planner +2 min"]);
+  assert.deepEqual(notes(300, 310), ["5 min late in realtime"], "within the same minute: agreed");
+  assert.deepEqual(notes(0, 0), []);
+});
+
+test("planner journeys are compared by their scheduled times, with delays beside them", () => {
+  const journey = normalizePlannerJourney(
+    {
+      departure: 1300,
+      arrival: 2100,
+      transfers: 1,
+      legs: [
+        { kind: "ride", boardStop: 0, alightStop: 1, boardTime: 1300, alightTime: 1500, boardDelay: 300, alightDelay: 300, boardPlatform: "2", alightPlatform: null, boardStopIri: "http://irail.be/stations/NMBS/008892007", alightStopIri: "http://irail.be/stations/NMBS/008841004", routeName: "IC", headsign: "X" },
+        { kind: "ride", boardStop: 1, alightStop: 0, boardTime: 1600, alightTime: 2100, boardDelay: 0, alightDelay: 120, boardStopIri: "http://irail.be/stations/NMBS/008841004", alightStopIri: "http://irail.be/stations/NMBS/008892007", routeName: "IC", headsign: "Y" },
+      ],
+    },
+    stopsFixture,
+  );
+  assert.equal(journey.departure, 1000);
+  assert.equal(journey.arrival, 1980);
+  assert.equal(journey.delay, 300);
+  assert.equal(journey.arrivalDelay, 120);
+  assert.deepEqual(
+    [journey.legs[0].from.time, journey.legs[0].from.delay, journey.legs[0].from.platform],
+    [1000, 300, "2"],
+  );
+  assert.equal(journey.legs[1].to.time, 1980);
 });
 
 test("iRail journeys arriving after the planner's window get their own status", () => {

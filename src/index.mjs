@@ -2,9 +2,11 @@ import { tableFromIPC, RecordBatchReader } from "apache-arrow";
 import { createPlanner as createPlannerCore } from "./planner-core.mjs";
 import { createPlannerService } from "./planner-service.mjs";
 import { addIrailMethods } from "./irail-methods.mjs";
+import { addRealtimeMethods } from "./realtime-watch.mjs";
 
 export { LC_VERSION } from "./lc-timetable.mjs";
 export { IrailApiError, NotSupportedError } from "./irail-errors.mjs";
+export { RealtimeWatcher } from "./realtime-watch.mjs";
 
 /** A planner instance owns its reference tables and bounded connection cache. */
 export class Planner {
@@ -28,9 +30,9 @@ export class Planner {
     return request;
   }
 
-  async init(dataUrl = this.dataUrl) {
+  async init(dataUrl = this.dataUrl, { realtime = true } = {}) {
     if (!dataUrl) throw new Error("Provide an absolute LC 2.0-alpha dataUrl");
-    this.sources = await this.request("init", { dataUrl });
+    this.sources = await this.request("init", { dataUrl, realtime });
     this.dataUrl = dataUrl;
     return this.sources;
   }
@@ -49,6 +51,7 @@ export class Planner {
 }
 
 addIrailMethods(Planner.prototype);
+addRealtimeMethods(Planner.prototype);
 
 export function createPlanner(options) {
   return new Planner(options);

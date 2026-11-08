@@ -1,7 +1,9 @@
 // The calls of the iRail API (https://docs.irail.be) over the planner, in plain
 // JavaScript types: times are `Date`s, numbers are numbers, lists are arrays and
-// what is unknown is `null`. Answered from the scheduled timetable, so delays are
-// 0, nothing is canceled and platforms are `null`.
+// what is unknown is `null`. Like the real API, a `time` is the scheduled time
+// and `delay` (seconds) is how late the real-time feed says it will be, so the
+// expected time is `time + delay`. Without a real-time feed, delays are 0 and
+// nothing is canceled. Platforms come from the feed and are `null` otherwise.
 import {
   apiStationId,
   normalizeLanguage,
@@ -12,6 +14,11 @@ import {
 import { serviceDateOf, zonedToEpoch, zonedParts } from "./irail-time.mjs";
 import { IrailApiError, NotSupportedError } from "./irail-errors.mjs";
 import { timeAt } from "./planner-data.mjs";
+import {
+  ARRIVAL_SKIPPED,
+  DEPARTURE_SKIPPED,
+  TRIP_CANCELED,
+} from "./realtime.mjs";
 
 const LIVEBOARD_SECONDS = 3600; // like the iRail API: the hour from `time`
 const TRIP_REACH_SECONDS = 8 * 3600; // longest trip we look across to find its ends
@@ -238,11 +245,19 @@ async function liveboard(core, sources, payload, now) {
       if (!stops.has(stop)) return;
       const time = timeAt(batch, arrivals ? "arr" : "dep", row);
       if (time < from || time > to) return;
-      // Pickup/drop-off type 1 means passengers cannot use this stop.
-      if ((arrivals ? batch.dropOff : batch.pickup)?.[row] === 1) return;
+      // A stop the feed says is skipped is shown, as canceled. Otherwise
+      // pickup/drop-off type 1 means passengers cannot use this stop.
+      const flags = batch.flags?.[row] ?? 0;
+      const skipped = (flags & (arrivals ? ARRIVAL_SKIPPED : DEPARTURE_SKIPPED)) !== 0;
+      if ((arrivals ? batch.dropOff : batch.pickup)?.[row] === 1 && !skipped)
+        return;
       const serviceDate = batch.serviceDate?.[row] ?? 0;
       hits.push({
         time,
+        delay: (arrivals ? batch.arrDelay : batch.depDelay)?.[row] ?? 0,
+        canceled: skipped || (flags & TRIP_CANCELED) !== 0,
+        platform:
+          (arrivals ? batch.arrPlatform : batch.depPlatform)?.[row] ?? null,
         trip: batch.trip[row],
         key: tripKey(batch.trip[row], serviceDate),
         stop,
@@ -250,7 +265,9 @@ async function liveboard(core, sources, payload, now) {
     },
   );
   const ends = await tripEnds(context, hits, from, to);
-  hits.sort((a, b) => a.time - b.time || a.trip - b.trip);
+  hits.sort(
+    (a, b) => a.time - a.delay - (b.time - b.delay) || a.trip - b.trip,
+  );
   const entries = hits.map((hit) => {
     const end = ends.get(hit.key);
     const other = placeOf(
@@ -258,18 +275,27 @@ async function liveboard(core, sources, payload, now) {
       (arrivals ? end?.origin : end?.destination) ?? hit.stop,
     );
     return {
-      time: at(hit.time),
-      delay: 0,
-      canceled: false,
+      time: at(hit.time - hit.delay),
+      delay: hit.delay,
+      canceled: hit.canceled,
       vehicle: vehicleView(vehicleOf(context.source, hit.trip)),
       [arrivals ? "origin" : "destination"]: other,
-      platform: null,
+      platform: hit.platform,
     };
   });
   return { station: stationView(station, context.lang), type, entries };
 }
 
 // ----------------------------------------------------------------- vehicle
+
+/** What the real-time overlay says about one connection (all zeros without it). */
+const rowRealtime = (batch, row) => ({
+  depDelay: batch.depDelay?.[row] ?? 0,
+  arrDelay: batch.arrDelay?.[row] ?? 0,
+  flags: batch.flags?.[row] ?? 0,
+  depPlatform: batch.depPlatform?.[row] ?? null,
+  arrPlatform: batch.arrPlatform?.[row] ?? null,
+});
 
 /** Stops of one trip, from its connections in stop-sequence order. */
 function stopsOfTrip(context, rows) {
@@ -280,12 +306,14 @@ function stopsOfTrip(context, rows) {
     const departureRow = rows[i];
     stops.push({
       station: placeOf(context, departureRow ? departureRow.dS : arrivalRow.aS),
-      arrival: arrivalRow ? at(arrivalRow.arr) : null,
-      departure: departureRow ? at(departureRow.dep) : null,
-      platform: null,
-      arrivalDelay: 0,
-      departureDelay: 0,
-      canceled: false,
+      arrival: arrivalRow ? at(arrivalRow.arr - arrivalRow.arrDelay) : null,
+      departure: departureRow ? at(departureRow.dep - departureRow.depDelay) : null,
+      platform: departureRow?.depPlatform ?? arrivalRow?.arrPlatform ?? null,
+      arrivalDelay: arrivalRow?.arrDelay ?? 0,
+      departureDelay: departureRow?.depDelay ?? 0,
+      canceled:
+        ((arrivalRow?.flags ?? 0) & (TRIP_CANCELED | ARRIVAL_SKIPPED)) !== 0 ||
+        ((departureRow?.flags ?? 0) & (TRIP_CANCELED | DEPARTURE_SKIPPED)) !== 0,
     });
   }
   return stops;
@@ -320,6 +348,7 @@ async function vehicle(core, sources, payload, now) {
           aS: batch.aS[row],
           dep: timeAt(batch, "dep", row),
           arr: timeAt(batch, "arr", row),
+          ...rowRealtime(batch, row),
         });
       },
     );
@@ -353,11 +382,12 @@ function walkEnd(context, ref, time) {
   return { station, time: at(time), platform: null, delay: 0, canceled: false };
 }
 
-const rideEnd = (context, stopIdx, time) => ({
+// `time` is the expected time; the scheduled time is `delay` earlier.
+const rideEnd = (context, stopIdx, time, delay, platform) => ({
   station: placeOf(context, stopIdx),
-  time: at(time),
-  platform: null,
-  delay: 0,
+  time: at(time - delay),
+  platform,
+  delay,
   canceled: false,
 });
 
@@ -382,6 +412,7 @@ async function intermediateStops(context, journeys) {
           aS: batch.aS[row],
           dep: timeAt(batch, "dep", row),
           arr: timeAt(batch, "arr", row),
+          ...rowRealtime(batch, row),
         });
     },
   );
@@ -399,8 +430,14 @@ async function intermediateStops(context, journeys) {
     for (let i = 0; i + 1 < rows.length; i += 1)
       list.push({
         station: placeOf(context, rows[i].aS),
-        arrival: at(rows[i].arr),
-        departure: at(rows[i + 1].dep),
+        arrival: at(rows[i].arr - rows[i].arrDelay),
+        departure: at(rows[i + 1].dep - rows[i + 1].depDelay),
+        arrivalDelay: rows[i].arrDelay,
+        departureDelay: rows[i + 1].depDelay,
+        platform: rows[i + 1].depPlatform ?? rows[i].arrPlatform,
+        canceled:
+          (rows[i].flags & ARRIVAL_SKIPPED) !== 0 ||
+          (rows[i + 1].flags & DEPARTURE_SKIPPED) !== 0,
       });
     stops.set(leg, list);
   }
@@ -421,8 +458,20 @@ function legView(context, leg, intermediates) {
   const info = vehicleOf(context.source, leg.trip);
   return {
     type: "ride",
-    from: rideEnd(context, leg.boardStop, leg.boardTime),
-    to: rideEnd(context, leg.alightStop, leg.alightTime),
+    from: rideEnd(
+      context,
+      leg.boardStop,
+      leg.boardTime,
+      leg.boardDelay ?? 0,
+      leg.boardPlatform ?? null,
+    ),
+    to: rideEnd(
+      context,
+      leg.alightStop,
+      leg.alightTime,
+      leg.alightDelay ?? 0,
+      leg.alightPlatform ?? null,
+    ),
     vehicle: vehicleView(info),
     direction: info.headsign || null,
     stops: intermediates.get(leg) ?? [],
@@ -470,13 +519,24 @@ async function connections(core, sources, payload, now, plan) {
   );
   const journeys = result.options.slice(0, wanted);
   const intermediates = await intermediateStops(context, journeys);
-  return journeys.map((journey) => ({
-    departure: at(journey.departure),
-    arrival: at(journey.arrival),
-    duration: journey.arrival - journey.departure,
-    transfers: journey.transfers,
-    legs: journey.legs.map((leg) => legView(context, leg, intermediates)),
-  }));
+  return journeys.map((journey) => {
+    // Journey times are scheduled; the delays are those of the first and the
+    // last train, which is what a traveller waits for.
+    const rides = journey.legs.filter((leg) => leg.kind === "ride");
+    const departureDelay = rides[0]?.boardDelay ?? 0;
+    const arrivalDelay = rides.at(-1)?.alightDelay ?? 0;
+    const departure = journey.departure - departureDelay;
+    const arrival = journey.arrival - arrivalDelay;
+    return {
+      departure: at(departure),
+      departureDelay,
+      arrival: at(arrival),
+      arrivalDelay,
+      duration: arrival - departure,
+      transfers: journey.transfers,
+      legs: journey.legs.map((leg) => legView(context, leg, intermediates)),
+    };
+  });
 }
 
 // --------------------------------------------------- not available (yet)

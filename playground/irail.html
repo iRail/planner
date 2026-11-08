@@ -41,8 +41,9 @@
           Every search runs twice: against
           <a href="https://api.irail.be">api.irail.be</a> and with the
           <a href="https://github.com/iRail/planner">iRail planner</a> library
-          on the open Linked Connections 2.0-alpha timetable. Then the two
-          answers and their speed are compared.
+          on the open Linked Connections 2.0-alpha timetable plus the
+          NMBS/SNCB GTFS Realtime feed. Then the two answers and their speed
+          are compared, and kept up to date while you look.
         </p>
       </div>
 
@@ -175,14 +176,24 @@
       <div id="planner-status" class="alert alert-info" role="status">
         Loading the planner's timetable…
       </div>
+      <div id="live-status" class="live-status" hidden>
+        <span class="live-dot" aria-hidden="true"></span>
+        <span id="live-text" role="status" aria-live="polite"></span>
+        <label class="live-toggle">
+          <input type="checkbox" id="live-toggle" checked />
+          Update automatically
+        </label>
+        <button type="button" class="live-now" id="live-now">Check now</button>
+      </div>
       <div id="route-alert"></div>
       <div id="route-results" aria-live="polite"></div>
     </main>
 
     <footer class="site-footer">
       <p>
-        iRail API results are realtime; planner results use the scheduled
-        timetable.
+        Both sides use realtime data: the iRail API from its own sources, the
+        planner from the NMBS/SNCB GTFS Realtime feed named in the timetable's
+        manifest, checked every 30 seconds.
       </p>
       <p id="data-source"></p>
     </footer>

@@ -74,8 +74,15 @@ export interface RideLeg {
   lastStopSequence: number;
   boardStop: number;
   alightStop: number;
+  /** UTC epoch seconds, including any real-time delay. */
   boardTime: number;
   alightTime: number;
+  /** Seconds the train is late at boarding / alighting; 0 without a real-time feed. */
+  boardDelay: number;
+  alightDelay: number;
+  /** Platform from the real-time feed, `null` when it does not name one. */
+  boardPlatform: string | null;
+  alightPlatform: string | null;
   routeName: string;
   routeType: number;
   headsign: string;
@@ -94,6 +101,7 @@ export interface WalkLeg {
   distanceMeters: number;
 }
 export interface Journey {
+  /** UTC epoch seconds, including real-time delays of the trains taken. */
   departure: number;
   arrival: number;
   transfers: number;
@@ -178,12 +186,14 @@ export interface LiveboardQuery extends IrailQuery {
   type?: "departure" | "arrival";
 }
 export interface LiveboardEntry {
+  /** The scheduled time. The expected time is `time + delay`. */
   time: Date;
-  /** Seconds. Always 0: the timetable is scheduled data. */
+  /** Seconds late according to the real-time feed; 0 without one. */
   delay: number;
+  /** The train is canceled, or skips this stop. */
   canceled: boolean;
   vehicle: Vehicle;
-  /** `null` until the data has platforms. */
+  /** From the real-time feed; `null` when it does not name a platform. */
   platform: string | null;
 }
 export interface DepartureEntry extends LiveboardEntry {
@@ -208,14 +218,15 @@ export interface VehicleQuery extends IrailQuery {
 }
 export interface VehicleStop {
   station: Station;
-  /** `null` at the first stop. */
+  /** Scheduled; `null` at the first stop. */
   arrival: Date | null;
-  /** `null` at the last stop. */
+  /** Scheduled; `null` at the last stop. */
   departure: Date | null;
   platform: string | null;
-  /** Seconds. Always 0 for now. */
+  /** Seconds late according to the real-time feed; 0 without one. */
   arrivalDelay: number;
   departureDelay: number;
+  /** The train is canceled, or skips this stop. */
   canceled: boolean;
 }
 export interface VehicleResult {
@@ -240,16 +251,25 @@ export interface ConnectionsQuery extends IrailQuery {
 }
 export interface LegEnd {
   station: Station;
+  /** Scheduled. The expected time is `time + delay`. */
   time: Date;
+  /** From the real-time feed; `null` when it does not name a platform. */
   platform: string | null;
-  /** Seconds. Always 0 for now. */
+  /** Seconds late according to the real-time feed; 0 without one. */
   delay: number;
   canceled: boolean;
 }
 export interface IntermediateStop {
   station: Station;
+  /** Scheduled. */
   arrival: Date;
   departure: Date;
+  /** Seconds late according to the real-time feed. */
+  arrivalDelay: number;
+  departureDelay: number;
+  platform: string | null;
+  /** The train skips this stop. */
+  canceled: boolean;
 }
 export interface ConnectionLeg {
   type: "ride" | "walk";
@@ -265,9 +285,15 @@ export interface ConnectionLeg {
   distanceMeters: number | null;
 }
 export interface Connection {
+  /** Scheduled; the expected time is `departure + departureDelay`. */
   departure: Date;
+  /** Seconds the first train is late. */
+  departureDelay: number;
+  /** Scheduled; the expected time is `arrival + arrivalDelay`. */
   arrival: Date;
-  /** Seconds. */
+  /** Seconds the last train is late. */
+  arrivalDelay: number;
+  /** Scheduled duration, in seconds. */
   duration: number;
   transfers: number;
   legs: ConnectionLeg[];
@@ -286,7 +312,9 @@ export class NotSupportedError extends IrailApiError {
 
 /**
  * The calls of the iRail API (https://docs.irail.be), answered from the
- * scheduled timetable, in plain JavaScript types. Rejections are IrailApiErrors.
+ * timetable and its real-time feed, in plain JavaScript types. Times are
+ * scheduled, with the delay beside them, like in the API. Rejections are
+ * IrailApiErrors.
  */
 export interface IrailApi {
   stations(query?: IrailQuery): Promise<Station[]>;
@@ -311,12 +339,90 @@ export interface IrailApi {
   }): Promise<never>;
 }
 
+/** What one real-time poll found for one source. */
+export interface RealtimeStatus {
+  sourceId: string;
+  /** False when the manifest names no GTFS Realtime feed. */
+  supported: boolean;
+  /** False when the feed has not been regenerated since the previous poll. */
+  changed: boolean;
+  /** When the feed was produced, UTC epoch seconds. */
+  timestamp?: number;
+  /** Trip updates in the feed, and how many were matched to the timetable. */
+  updates?: number;
+  matched?: number;
+  unmatched?: number;
+  /** Matched trips that are late, and that are canceled. */
+  delayed?: number;
+  canceled?: number;
+}
+export interface WatchOptions {
+  /** Milliseconds between polls, at least 1000. Default 30000. */
+  intervalMs?: number;
+  /** Poll right away rather than after the first interval. Default true. */
+  immediate?: boolean;
+}
+export interface RealtimeEventMap {
+  /** The feed changed; re-run your searches. */
+  update: CustomEvent<RealtimeStatus[]>;
+  /** Every successful poll, changed or not. */
+  poll: CustomEvent<RealtimeStatus[]>;
+  /** A poll failed; the last data stays in use and polling goes on. */
+  error: CustomEvent<Error>;
+}
+/** Polls the real-time feed on a timer. Stop it with `stop()`. */
+export class RealtimeWatcher extends EventTarget {
+  constructor(
+    refresh: () => Promise<RealtimeStatus[]>,
+    options?: Pick<WatchOptions, "intervalMs">,
+  );
+  readonly intervalMs: number;
+  readonly running: boolean;
+  /** The status of the last successful poll. */
+  status?: RealtimeStatus[];
+  start(options?: Pick<WatchOptions, "immediate">): this;
+  stop(): this;
+  /** Poll now, for example when a hidden page becomes visible. */
+  pollNow(): Promise<RealtimeStatus[] | undefined>;
+  addEventListener<K extends keyof RealtimeEventMap>(
+    type: K,
+    listener: (event: RealtimeEventMap[K]) => void,
+    options?: boolean | AddEventListenerOptions,
+  ): void;
+  addEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+    options?: boolean | AddEventListenerOptions,
+  ): void;
+  removeEventListener<K extends keyof RealtimeEventMap>(
+    type: K,
+    listener: (event: RealtimeEventMap[K]) => void,
+    options?: boolean | EventListenerOptions,
+  ): void;
+  removeEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+    options?: boolean | EventListenerOptions,
+  ): void;
+}
+/** The real-time methods of `Planner` and `PlannerClient`. */
+export interface RealtimeApi {
+  /**
+   * Fetch the manifest's GTFS Realtime feed now and apply it to every later
+   * search. Rejects when the feed cannot be read; the last data stays in use.
+   */
+  refreshRealtime(): Promise<RealtimeStatus[]>;
+  /** Poll the feed (every 30 s by default); listen for `update` events. */
+  watchRealtime(options?: WatchOptions): RealtimeWatcher;
+}
+
 export interface PlannerRequests {
   request(
     type: "init",
-    payload: { dataUrl: string },
+    payload: { dataUrl: string; realtime?: boolean },
     onProgress?: OnProgress,
   ): Promise<Source[]>;
+  request(type: "realtime", payload?: Record<string, never>): Promise<RealtimeStatus[]>;
   request(
     type: "plan",
     payload: JourneyQuery & { maxWalkMeters: number },
@@ -335,11 +441,14 @@ export interface PlannerRequests {
   request(type: "connections", payload: ConnectionsQuery): Promise<Connection[]>;
   request(type: "vehicle", payload: VehicleQuery): Promise<VehicleResult>;
 }
-export class Planner implements PlannerRequests, IrailApi {
+export class Planner implements PlannerRequests, IrailApi, RealtimeApi {
   constructor(options?: PlannerOptions);
   dataUrl?: string;
   sources: Source[];
-  init(dataUrl?: string): Promise<Source[]>;
+  /** Loads the timetable and, unless `realtime` is false, its real-time feed. */
+  init(dataUrl?: string, options?: { realtime?: boolean }): Promise<Source[]>;
+  refreshRealtime: RealtimeApi["refreshRealtime"];
+  watchRealtime: RealtimeApi["watchRealtime"];
   plan(query: JourneyQuery, onProgress?: OnProgress): Promise<JourneyResult>;
   isochrone(
     query: IsochroneQuery,

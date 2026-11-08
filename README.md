@@ -103,7 +103,9 @@ separate instances for independent concurrent workloads.
 
 | Method                                              | Returns                                                                                                                                               |
 | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `await planner.init(dataUrl?)`                      | Source metadata, stop IRIs/names/coordinates, searchable station indices, release ID, timezone and coverage. Call again to load a new release.        |
+| `await planner.init(dataUrl?, { realtime? })`       | Source metadata, stop IRIs/names/coordinates, searchable station indices, release ID, timezone and coverage. Call again to load a new release. Also loads the real-time feed unless `realtime` is `false`. |
+| `await planner.refreshRealtime()`                   | Re-reads the manifest's GTFS Realtime feed; one `{ sourceId, supported, changed, timestamp, … }` per source. See [Real-time updates](#real-time-updates). |
+| `planner.watchRealtime({ intervalMs? })`            | Polls the feed (every 30 s) and emits `update` events when it changes. Returns a watcher with `stop()`.                                              |
 | `await planner.plan(query, onProgress?)`            | `{ found, options, totalOptions, scanned, window, diagnostics }`. Each option has `departure`, `arrival`, `transfers` and `legs`.                     |
 | `await planner.isochrone(query, onProgress?)`       | `{ found, noAccess, origin, points, maxWalkMeters, scanned, pages, diagnostics }`. Points include coordinates, names, networks and `durationSeconds`. |
 | `await planner.request(type, payload, onProgress?)` | The underlying message protocol (`init`, `plan`, `isochrone` and the iRail calls), also used by `PlannerClient`.                                      |
@@ -126,8 +128,60 @@ const surface = await planner.isochrone({
 
 Ride legs include `sourceId`, `trip`, `boardStop`, `alightStop`, `boardTime`,
 `alightTime`, `serviceDate`, `routeName`, `routeType`, `headsign`, `tripIri`,
-`routeIri`, `boardStopIri`, `alightStopIri` and the boarding `connectionIri`.
+`routeIri`, `boardStopIri`, `alightStopIri` and the boarding `connectionIri`, and,
+from real-time data, `boardDelay` and `alightDelay` (seconds late) and
+`boardPlatform` and `alightPlatform` (`null` when unknown). `boardTime`, `alightTime`
+and a journey's `departure` and `arrival` already include those delays.
 Walk legs include endpoint references, times and distance in meters.
+
+## Real-time updates
+
+When the manifest names a GTFS Realtime feed (`"realtime": [{ "@type":
+"GtfsRealtimeFeed", "@id": "…trip-updates.pb", "tripTemplate": "…{trip_id}" }]`, as
+the iRail CDN does), `init` loads it and every search uses it. The feed is applied
+to the connections *while they are read*, so journeys, liveboards and vehicles
+all see the same network:
+
+- **Delays** move a connection's departure and arrival. The delay of the last
+  stop the feed mentions carries on to the stops after it, a train never leaves
+  early, and the pages are re-sorted because delays reorder departures.
+- **Canceled trips** disappear from journey results. Liveboards and `vehicle` still
+  list them, with `canceled: true`.
+- **Skipped stops** cannot be boarded or left, but the train still rides through.
+- **Platforms** come from the feed's stop ids (`8892601_1` is platform 1).
+
+The scheduled pages stay untouched in the cache; the overlay is applied to a copy,
+so a feed update costs one small download and no page reloads.
+
+In the iRail calls, a `time` is the scheduled time and `delay` is how late the feed says
+it is, like in the iRail API: the expected time is `time + delay`. In `plan`, the
+times already include the delay, and each ride leg says how much it was.
+
+To keep results up to date, poll the feed and search again when it changes:
+
+```js
+const watcher = planner.watchRealtime(); // or { intervalMs: 30_000 } (the default)
+watcher.addEventListener("update", async (event) => {
+  const [status] = event.detail; // { timestamp, delayed, canceled, … }
+  showJourneys(await planner.connections({ from, to }));
+});
+watcher.addEventListener("error", (event) => console.warn(event.detail));
+// later
+watcher.stop();
+```
+
+`update` fires only when the publisher regenerated the feed, `poll` after every poll,
+and `error` when a poll fails (the previous data stays in use and polling goes on).
+Polls never overlap. `await planner.refreshRealtime()` does a single poll;
+`watcher.pollNow()` polls immediately, for example when a hidden tab becomes visible
+again. `PlannerClient` has the same methods in the browser, and the polling runs in
+the page, not the worker. Both playground pages do exactly this: the main page plans the journey on screen again
+when the feed changes, keeping the selected journey and the map view, and the
+[comparison page](#development-playground-and-github-pages) redraws both sides.
+
+Limits: updates for trips the timetable does not contain (added trips) are ignored;
+only trip updates are read, not alerts or vehicle positions; and a train's delay is
+not predicted beyond what the feed says.
 
 The lower-level `@irail/planner/core` entry exports `createPlanner(arrow, options)`
 for callers managing loaded source objects and page loaders themselves. Most
@@ -136,7 +190,7 @@ applications should use the main entry or the browser worker client.
 ## iRail API calls
 
 The planner also offers the features of the [iRail API](https://docs.irail.be),
-answered from the scheduled timetable, as ordinary JavaScript: times are `Date`s
+answered from the timetable and its real-time feed, as ordinary JavaScript: times are `Date`s
 (or epoch milliseconds when you pass them in), numbers are numbers, lists are
 arrays and what is unknown is `null`. They are methods of `Planner` and, in the
 browser, of `PlannerClient`.
@@ -186,12 +240,15 @@ for (const { departure, arrival, transfers, legs } of connections)
 A `station` or `from`/`to` is a station id (`BE.NMBS.008892007`), URI or number, a
 name in any language, or a `Station` returned by an earlier call. A connection leg is
 `{ type: "ride" | "walk", from, to, vehicle, direction, stops, distanceMeters }`;
-`from` and `to` hold the `station`, `time`, `platform`, `delay` (seconds) and
-`canceled`, and a ride's `stops` are the stops in between. `connections` also takes
+`from` and `to` hold the `station`, `time` (scheduled), `platform`, `delay` (seconds) and
+`canceled`, and a ride's `stops` are the stops in between, each with its own delay.
+A connection has scheduled `departure` and `arrival` with `departureDelay` and
+`arrivalDelay` beside them. `connections` also takes
 `maxWalkMeters` (default 0: no walking between stations).
 
-The timetable is scheduled data, so for now `delay` is 0, `canceled` is `false` and
-`platform` is `null`. Station labels, translations and the traffic figures that rank
+Delays, cancellations and platforms come from the real-time feed (see
+[Real-time updates](#real-time-updates)); without one, `delay` is 0, `canceled` is
+`false` and `platform` is `null`. Station labels, translations and the traffic figures that rank
 station search results come from the iRail CDN's `stations.arrow` extension, loaded on
 first use; without it the timetable's own stop names are used. A leg's `direction` is the
 timetable's published headsign.
@@ -305,7 +362,8 @@ remaining aboard is permitted.
 
 Current limits:
 
-- Scheduled routing only; GTFS Realtime feeds are not applied.
+- Real-time data is limited to GTFS Realtime trip updates; linked trips, alerts and
+  vehicle positions are not read.
 - Linked trips (transfer types 4/5) are not implemented; such tables fail explicitly.
 - Transfer overrides between different stations are ignored. Walking between
   stations uses physical distance. Street paths, accessibility, barriers and fares are not modeled.
@@ -331,7 +389,7 @@ alias for `build:playground`; the library itself ships native ESM source. Only
 
 The playground loads the iRail CDN's live LC 2.0-alpha timetable
 (`https://irail.github.io/iRail-cdn/manifest.jsonld`, NMBS/SNCB open data, scheduled
-service only) by default. It starts at the current time, clamped to the feed's
+service plus its GTFS Realtime feed) by default. It starts at the current time, clamped to the feed's
 coverage, with Gent-Sint-Pieters → Liège-Guillemins preselected. Override it with
 the timetable URL form, `?data=https://publisher.example/manifest.jsonld`, or a
 build-time `VITE_DATA_URL`. A small **illustrative timetable for 8 November 2026**,
@@ -345,8 +403,11 @@ library on the iRail CDN data, then shows the journeys side by side with a diff
 (identical, other arrival, only in one side, slower journeys the planner omits by
 design, arrivals beyond the planner's adaptive window) and timings: first request
 and repeat for both, plus the planner's one-off start-up. API results include
-realtime delays and cancellations, planner results are scheduled only, so
-differences are expected and each carries a reason. Stations are matched through
+realtime delays and cancellations from iRail's own sources, planner results from
+the NMBS/SNCB GTFS Realtime feed, so small differences are possible and each
+carries a reason. The page checks the feed every 30 seconds and, when it changes,
+asks both sides again and redraws the results in place (open journeys stay open);
+**Check now** does so on demand and the checkbox switches it off. Stations are matched through
 their NMBS station number. The station search works like irail.be's: it finds
 stations by their name in any language (nl, fr, de, en), shows the label in the
 language chosen in the header, and ranks exact, word-prefix, prefix and partial

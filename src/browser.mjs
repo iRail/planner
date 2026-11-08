@@ -9,3 +9,4 @@ export function createPlannerWorker() {
     type: "module",
   });
 }
+export { RealtimeWatcher } from "./realtime-watch.mjs";

@@ -47,8 +47,11 @@ worker, on the iRail CDN data), then shows:
   distort each other;
 - both result lists side by side in irail.be's card style.
 
-The API reports realtime delays and cancellations, the planner uses the scheduled
-timetable; the API lists the next departures including slower ones, the planner
+Both sides apply realtime delays and cancellations, from different feeds (iRail's
+own sources and the NMBS/SNCB GTFS Realtime feed), so they can disagree and the
+diff says so. (The main page, `index.html`, refreshes its journeys the same way.) While the page is open, `planner.watchRealtime()` checks the planner's
+feed every 30 seconds; when it changes, both sides are asked again and the results
+are redrawn in place, keeping the cards you opened. The API lists the next departures including slower ones, the planner
 lists Pareto-optimal alternatives within its search window. Journeys match when
 their scheduled departure and arrival instants are equal. The logic is in
 `compare.mjs` and covered by `test/compare.test.mjs`.

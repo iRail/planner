@@ -39,7 +39,13 @@ const els = {
   status: el("planner-status"),
   alert: el("route-alert"),
   results: el("route-results"),
+  live: el("live-status"),
+  liveText: el("live-text"),
+  liveToggle: el("live-toggle"),
+  liveNow: el("live-now"),
 };
+
+const LIVE_INTERVAL_MS = 30_000;
 
 const state = {
   planner: null,
@@ -54,6 +60,10 @@ const state = {
   coverage: { start: -Infinity, end: Infinity },
   running: false,
   history: [], // one timing record per finished search in this session
+  watcher: null, // polls the planner's real-time feed
+  pendingRefresh: false, // a feed update arrived while a search was running
+  feed: null, // the last real-time status the planner reported
+  checkedAt: 0,
 };
 
 const pad = (n) => String(n).padStart(2, "0");
@@ -73,6 +83,17 @@ const timeFormat = new Intl.DateTimeFormat("en-GB", {
   timeZone: "Europe/Brussels",
 });
 const formatTime = (seconds) => timeFormat.format(new Date(seconds * 1000));
+const clockFormat = new Intl.DateTimeFormat("en-GB", {
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23",
+  timeZone: "Europe/Brussels",
+});
+const formatClock = (millis) => clockFormat.format(new Date(millis));
+const lateMinutes = (seconds) => (seconds > 0 ? Math.round(seconds / 60) : 0);
+const delayBadge = (seconds) =>
+  lateMinutes(seconds) ? `<span class="delay">+${lateMinutes(seconds)}'</span>` : "";
 function formatDuration(seconds) {
   const minutes = Math.round(seconds / 60);
   const hours = Math.floor(minutes / 60);
@@ -261,7 +282,7 @@ const callPlanner = (query) =>
 function stopRow(point, showPlatform = true) {
   return `
     <div class="planner-row">
-      <span class="planner-time"><b>${formatTime(point.time)}</b></span>
+      <span class="planner-time"><b>${formatTime(point.time)}</b>${delayBadge(point.delay)}</span>
       <span class="planner-station"><b>${escapeHtml(point.name)}</b></span>
       <span class="planner-platform">${showPlatform && point.platform ? `<span class="badge">${escapeHtml(point.platform)}</span>` : ""}</span>
     </div>`;
@@ -301,16 +322,20 @@ const PILL = {
   window: "Beyond planner's window",
 };
 
-function journeyCard(journey, row, open) {
-  const late = journey.delay > 0 ? Math.round(journey.delay / 60) : 0;
+// A card is identified by its side and scheduled times, so it stays open (or
+// closed) when live updates redraw the results.
+const cardKey = (side, journey) =>
+  `${side}:${journey.departure}:${journey.arrival}`;
+
+function journeyCard(journey, row, open, side) {
+  const late = lateMinutes(journey.delay) || lateMinutes(journey.arrivalDelay);
   return `
-    <article class="result-card is-${row.status}${open ? " is-open" : ""}">
+    <article class="result-card is-${row.status}${open ? " is-open" : ""}" data-key="${cardKey(side, journey)}">
       <button class="connection-summary" type="button" data-toggle-panel>
         <span>
           <span class="connection-times">
             ${late || journey.canceled ? `<span class="delay-route">!</span>` : ""}
-            <span>${formatTime(journey.departure)}</span><span>-&gt;</span><span>${formatTime(journey.arrival)}</span>
-            ${late ? `<span class="delay">+${late}'</span>` : ""}
+            <span>${formatTime(journey.departure)}</span>${delayBadge(journey.delay)}<span>-&gt;</span><span>${formatTime(journey.arrival)}</span>${delayBadge(journey.arrivalDelay)}
             ${journey.canceled ? `<span class="delay">canceled</span>` : ""}
           </span>
           <span class="connection-meta">
@@ -325,10 +350,17 @@ function journeyCard(journey, row, open) {
     </article>`;
 }
 
-function column(kind, title, subtitle, side, rows, error) {
+function column(kind, title, subtitle, side, rows, error, openKeys) {
   const cards = rows
     .filter((row) => row[side])
-    .map((row, index) => journeyCard(row[side], row, index === 0));
+    .map((row, index) =>
+      journeyCard(
+        row[side],
+        row,
+        openKeys ? openKeys.has(cardKey(side, row[side])) : index === 0,
+        side,
+      ),
+    );
   const body = error
     ? `<div class="alert alert-danger">${escapeHtml(error.message)}</div>`
     : cards.length
@@ -427,7 +459,7 @@ function timingHtml(t) {
     ),
     barRow(
       "Planner",
-      "in your browser · scheduled",
+      "in your browser · realtime",
       "planner",
       [
         {
@@ -524,14 +556,14 @@ function analyse(run) {
   });
 }
 
-function render(run) {
+function render(run, openKeys) {
   const { api, planner, comparison, timings } = run;
   const rows = comparison.rows;
   els.results.innerHTML = [
     verdictHtml(comparison.summary, api, planner),
     timingHtml(timings),
     tableHtml(rows),
-    `<section class="compare-section"><div class="compare-columns">${column("api", "iRail API", "realtime", "api", rows, api.error)}${column("planner", "Planner", "scheduled", "planner", rows, planner.error)}</div></section>`,
+    `<section class="compare-section"><div class="compare-columns">${column("api", "iRail API", "realtime", "api", rows, api.error, openKeys)}${column("planner", "Planner", "realtime", "planner", rows, planner.error, openKeys)}</div></section>`,
   ].join("");
 }
 
@@ -558,6 +590,25 @@ function updateUrl(from, to, epoch) {
   } catch {
     // The address bar is a convenience only.
   }
+}
+
+/** Both result sets in the shape the diff and the cards use, analysed. */
+function buildRun(api, planner, extra) {
+  const names = state.source.stops.name;
+  const ids = state.source.stops.id;
+  const run = {
+    ...extra,
+    api,
+    planner,
+    apiJourneys: api.error ? [] : api.value.map(normalizeApiConnection),
+    plannerJourneys: planner.error
+      ? []
+      : planner.value.options.map((option) =>
+          normalizePlannerJourney(option, { names, ids }),
+        ),
+  };
+  analyse(run);
+  return run;
 }
 
 async function search() {
@@ -616,24 +667,7 @@ async function search() {
     step("Planning with the planner library…");
     const plan1 = await callPlanner(query);
 
-    const names = state.source.stops.name;
-    const ids = state.source.stops.id;
-    const apiJourneys = api1.error
-      ? []
-      : api1.value.map(normalizeApiConnection);
-    const plannerJourneys = plan1.error
-      ? []
-      : plan1.value.options.map((option) =>
-          normalizePlannerJourney(option, { names, ids }),
-        );
-    const run = {
-      api: api1,
-      planner: plan1,
-      apiJourneys,
-      plannerJourneys,
-      timings: { api1, plan1 },
-    };
-    analyse(run);
+    const run = buildRun(api1, plan1, { timings: { api1, plan1 }, apiUrl, query });
     state.lastRun = run;
     render(run);
 
@@ -654,8 +688,135 @@ async function search() {
   } finally {
     state.running = false;
     els.search.disabled = false;
+    if (state.pendingRefresh) refreshResults();
   }
 }
+
+// ----------------------------------------------------------- live updates
+
+/**
+ * Ask both sides again for the search on screen and redraw in place: cards the
+ * reader opened stay open, and the speed figures of the first search stay.
+ */
+async function refreshResults() {
+  const previous = state.lastRun;
+  if (!previous?.query || !state.planner) return;
+  if (state.running) {
+    state.pendingRefresh = true;
+    return;
+  }
+  state.pendingRefresh = false;
+  state.running = true;
+  try {
+    // One after the other, like the first search, so neither slows the other.
+    const api = await callApi(previous.apiUrl);
+    const planner = await callPlanner(previous.query);
+    const open = new Set(
+      [...els.results.querySelectorAll(".result-card.is-open")].map(
+        (card) => card.dataset.key,
+      ),
+    );
+    const run = buildRun(api, planner, {
+      timings: previous.timings,
+      apiUrl: previous.apiUrl,
+      query: previous.query,
+      updatedAt: Date.now(),
+    });
+    state.lastRun = run;
+    render(run, open);
+    showLive("live", "flash");
+  } catch (error) {
+    console.error(error);
+  } finally {
+    state.running = false;
+    if (state.pendingRefresh) refreshResults();
+  }
+}
+
+function liveSummary() {
+  const feed = state.feed;
+  if (!feed?.supported) return "";
+  return `Real-time feed of ${formatClock(feed.timestamp * 1000)} · ${feed.delayed} delayed and ${feed.canceled} canceled trips`;
+}
+
+// kind: live | stale | off
+function showLive(kind, flash) {
+  els.live.hidden = false;
+  els.live.classList.toggle("is-live", kind === "live");
+  els.live.classList.toggle("is-stale", kind === "stale");
+  const parts = [liveSummary()];
+  if (kind === "stale")
+    parts.push("could not reach the feed, showing the last data");
+  else if (kind === "off") parts.push("automatic updates are off");
+  else {
+    if (state.checkedAt) parts.push(`checked ${formatClock(state.checkedAt)}`);
+    if (state.lastRun?.updatedAt)
+      parts.push(`results updated ${formatClock(state.lastRun.updatedAt)}`);
+    if (kind === "live") parts.push("checking every 30 s");
+  }
+  els.liveText.textContent = parts.filter(Boolean).join(" · ");
+  if (flash) {
+    els.live.classList.add("is-flash");
+    setTimeout(() => els.live.classList.remove("is-flash"), 1500);
+  }
+}
+
+function startWatching({ immediate = false } = {}) {
+  stopWatching();
+  if (!els.liveToggle.checked || document.hidden || !state.feed?.supported)
+    return;
+  const watcher = state.planner.watchRealtime({
+    intervalMs: LIVE_INTERVAL_MS,
+    immediate,
+  });
+  watcher.addEventListener("poll", (event) => {
+    state.feed = event.detail[0];
+    state.checkedAt = Date.now();
+    showLive("live");
+  });
+  watcher.addEventListener("update", () => refreshResults());
+  watcher.addEventListener("error", () => showLive("stale"));
+  state.watcher = watcher;
+}
+
+function stopWatching() {
+  state.watcher?.stop();
+  state.watcher = null;
+}
+
+els.liveToggle.addEventListener("change", () => {
+  if (els.liveToggle.checked) {
+    startWatching({ immediate: true });
+    showLive("live");
+  } else {
+    stopWatching();
+    showLive("off");
+  }
+});
+
+els.liveNow.addEventListener("click", async () => {
+  els.liveNow.disabled = true;
+  try {
+    // Re-ask both sides, even if the planner's feed has not changed: the
+    // iRail API may have.
+    const [status] = await state.planner.refreshRealtime();
+    state.feed = status;
+    state.checkedAt = Date.now();
+    await refreshResults();
+    showLive(els.liveToggle.checked ? "live" : "off");
+  } catch (error) {
+    console.error(error);
+    showLive("stale");
+  } finally {
+    els.liveNow.disabled = false;
+  }
+});
+
+// A hidden tab does not poll; coming back checks at once.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopWatching();
+  else startWatching({ immediate: true });
+});
 
 els.form.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -721,6 +882,20 @@ async function init() {
     for (const input of [els.from, els.to, els.search]) input.disabled = false;
 
     els.status.textContent = `Planner ready: ${state.stations.length.toLocaleString()} stations loaded in ${formatMs(state.initMs)}${rows ? "" : "; station translations unavailable, showing the timetable's own names"}.`;
+    // The planner loaded the real-time feed while starting; this reads its
+    // status (and checks for anything newer), then keeps checking.
+    try {
+      [state.feed] = await state.planner.refreshRealtime();
+      state.checkedAt = Date.now();
+    } catch (error) {
+      console.warn("Real-time feed unavailable:", error);
+    }
+    if (state.feed?.supported) {
+      showLive("live");
+      startWatching();
+    } else
+      els.status.textContent +=
+        " This timetable has no real-time feed, so results use the schedule.";
     if (fromParam && toParam) search();
   } catch (error) {
     console.error(error);

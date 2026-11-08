@@ -14,7 +14,14 @@ const state = {
   sources: [],
   origin: null, // { sourceId, stopIdx } | null
   destination: null,
+  lastQuery: null, // the plan request on screen, repeated when real-time data changes
+  selected: 0, // index of the journey shown on the map
+  feed: null, // the last real-time status the planner reported
+  checkedAt: 0,
+  updatedAt: 0,
+  watcher: null,
 };
+const LIVE_INTERVAL_MS = 30_000;
 
 const el = (id) => document.getElementById(id);
 const statusEl = el("status");
@@ -220,6 +227,14 @@ function formatDuration(seconds) {
     : `${remainder} min`;
 }
 
+const lateMinutes = (seconds) => (seconds > 0 ? Math.round(seconds / 60) : 0);
+const delayBadge = (seconds) =>
+  lateMinutes(seconds)
+    ? `<span class="delay">+${lateMinutes(seconds)}'</span>`
+    : "";
+const platformBadge = (platform) =>
+  platform ? `<span class="platform">${escapeHtml(platform)}</span>` : "";
+
 function renderLeg(source, leg) {
   const routeName = leg.routeName;
   const headsign = leg.headsign;
@@ -229,11 +244,11 @@ function renderLeg(source, leg) {
   div.innerHTML = `
 <div class="row">
   <span class="stop">${escapeHtml(source.stops.name[leg.boardStop] || source.stops.id[leg.boardStop])}</span>
-  <span class="time">${formatTime(leg.boardTime)}</span>
+  <span class="time">${formatTime(leg.boardTime)}${delayBadge(leg.boardDelay)}${platformBadge(leg.boardPlatform)}</span>
 </div>
 <div class="row">
   <span class="stop">${escapeHtml(source.stops.name[leg.alightStop] || source.stops.id[leg.alightStop])}</span>
-  <span class="time">${formatTime(leg.alightTime)}</span>
+  <span class="time">${formatTime(leg.alightTime)}${delayBadge(leg.alightDelay)}${platformBadge(leg.alightPlatform)}</span>
 </div>
 <div class="trip">${escapeHtml(source.name)} · ${routeName ? escapeHtml(routeName) + " · " : ""}${escapeHtml(headsign || "")}</div>
     `;
@@ -284,6 +299,7 @@ function renderOption(option, index) {
       .querySelectorAll(".option")
       .forEach((element) => element.removeAttribute("aria-current"));
     card.setAttribute("aria-current", "true");
+    state.selected = index;
     showJourney(option);
   };
   card.addEventListener("click", select);
@@ -291,7 +307,9 @@ function renderOption(option, index) {
   return card;
 }
 
-function renderResults(result) {
+// `refresh` redraws after a live update: the journey the reader was looking at
+// stays selected (when it still exists) and the map does not jump.
+function renderResults(result, { refresh = false } = {}) {
   const results = el("results");
   results.innerHTML = "";
   if (!result.found) {
@@ -302,8 +320,12 @@ function renderResults(result) {
   for (const [index, option] of result.options.entries())
     results.appendChild(renderOption(option, index));
   if (result.options.length) {
-    results.firstElementChild.setAttribute("aria-current", "true");
-    showJourney(result.options[0]);
+    const index = refresh
+      ? Math.min(state.selected, result.options.length - 1)
+      : 0;
+    state.selected = index;
+    results.children[index].setAttribute("aria-current", "true");
+    showJourney(result.options[index], !refresh);
   }
 }
 
@@ -652,7 +674,7 @@ function clearRouteLines() {
   journeyFeatures = [];
   scheduleRouteDraw();
 }
-function showJourney(option) {
+function showJourney(option, fit = true) {
   journeyFeatures = [];
   for (const leg of option.legs) {
     const from = endpointCoordinates(
@@ -674,9 +696,10 @@ function showJourney(option) {
     else if (from && to) journeyFeatures.push(lineFeature(from, to, leg.kind));
   }
   scheduleRouteDraw();
-  fitCoordinates(
-    journeyFeatures.flatMap((feature) => feature.geometry.coordinates),
-  );
+  if (fit)
+    fitCoordinates(
+      journeyFeatures.flatMap((feature) => feature.geometry.coordinates),
+    );
 }
 
 let isoMap;
@@ -947,6 +970,18 @@ async function init() {
     if (state.sources.length === 0) {
       throw new Error("no source could be loaded");
     }
+    // The planner loaded real-time data while starting; read its status and
+    // keep checking.
+    try {
+      state.feed = summarizeFeeds(await planner.refreshRealtime());
+      state.checkedAt = Date.now();
+    } catch (error) {
+      console.warn("Real-time feed unavailable:", error);
+    }
+    if (state.feed?.supported) {
+      showLive("live");
+      startWatching();
+    }
 
     renderSourceCheckboxes();
     renderSourceCheckboxes("iso-source-list");
@@ -1085,6 +1120,7 @@ el("journey-form").addEventListener("submit", async (event) => {
   planButton.disabled = true;
   const startedAt = performance.now();
   el("results").innerHTML = "";
+  state.lastQuery = null;
   clearRouteLines();
   try {
     const departureAfter = Math.floor(departureDate.getTime() / 1000);
@@ -1107,18 +1143,15 @@ el("journey-form").addEventListener("submit", async (event) => {
     };
 
     setStatus("Loading connections and planning the journey…");
-    const result = await planner.request(
-      "plan",
-      {
-        origin: state.origin,
-        destination: state.destination,
-        departureAfter,
-        maxWalkMeters,
-        windowMode,
-        sourceIds: activeSources().map((source) => source.id),
-      },
-      onProgress,
-    );
+    const query = {
+      origin: state.origin,
+      destination: state.destination,
+      departureAfter,
+      maxWalkMeters,
+      windowMode,
+      sourceIds: activeSources().map((source) => source.id),
+    };
+    const result = await planner.request("plan", query, onProgress);
 
     if (revision !== journeyRevision) return;
     const elapsed = Math.round(performance.now() - startedAt);
@@ -1138,6 +1171,9 @@ el("journey-form").addEventListener("submit", async (event) => {
       !result.found,
     );
     renderResults(result);
+    state.lastQuery = query;
+    state.updatedAt = 0;
+    if (state.feed?.supported) showLive(state.watcher ? "live" : "off");
   } catch (error) {
     if (revision !== journeyRevision) return;
     console.error(error);
@@ -1145,11 +1181,144 @@ el("journey-form").addEventListener("submit", async (event) => {
   } finally {
     journeyRunning = false;
     planButton.disabled = false;
+    if (livePending) refreshJourneys();
     if (mapJourneyPending) {
       mapJourneyPending = false;
       el("journey-form").requestSubmit();
     }
   }
+});
+
+// ----------------------------------------------------------- live updates
+
+let livePending = false;
+const clockFormat = new Intl.DateTimeFormat("en-GB", {
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23",
+  timeZone: "Europe/Brussels",
+});
+const formatClock = (millis) => clockFormat.format(new Date(millis));
+
+/** One status for all sources: their counts added up. */
+function summarizeFeeds(statuses) {
+  const live = statuses.filter((status) => status.supported);
+  if (!live.length) return { supported: false, changed: false };
+  return {
+    supported: true,
+    changed: live.some((status) => status.changed),
+    timestamp: Math.max(...live.map((status) => status.timestamp)),
+    delayed: live.reduce((sum, status) => sum + status.delayed, 0),
+    canceled: live.reduce((sum, status) => sum + status.canceled, 0),
+  };
+}
+
+// kind: live | stale | off
+function showLive(kind, flash = false) {
+  const strip = el("live-status");
+  strip.hidden = false;
+  strip.classList.toggle("is-live", kind === "live");
+  strip.classList.toggle("is-stale", kind === "stale");
+  const feed = state.feed;
+  const parts = [
+    feed?.supported
+      ? `Real-time feed of ${formatClock(feed.timestamp * 1000)} · ${feed.delayed} delayed and ${feed.canceled} canceled trips`
+      : "",
+  ];
+  if (kind === "stale")
+    parts.push("could not reach the feed, showing the last data");
+  else if (kind === "off") parts.push("automatic updates are off");
+  else {
+    if (state.checkedAt) parts.push(`checked ${formatClock(state.checkedAt)}`);
+    if (state.updatedAt)
+      parts.push(`journeys updated ${formatClock(state.updatedAt)}`);
+    parts.push("checking every 30 s");
+  }
+  el("live-text").textContent = parts.filter(Boolean).join(" · ");
+  if (flash) {
+    strip.classList.add("is-flash");
+    setTimeout(() => strip.classList.remove("is-flash"), 1500);
+  }
+}
+
+/**
+ * Plan the journeys on screen again with the newest real-time data and redraw
+ * in place. The query is the one the reader asked for; a new search in the
+ * meantime wins, and its results are never overwritten by an older refresh.
+ */
+async function refreshJourneys() {
+  if (!state.lastQuery) return;
+  if (journeyRunning) {
+    livePending = true;
+    return;
+  }
+  livePending = false;
+  const revision = journeyRevision;
+  try {
+    const result = await planner.request("plan", state.lastQuery);
+    if (revision !== journeyRevision || journeyRunning) return;
+    renderResults(result, { refresh: true });
+    state.updatedAt = Date.now();
+    showLive(state.watcher ? "live" : "off", true);
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+function startWatching({ immediate = false } = {}) {
+  stopWatching();
+  if (!el("live-toggle").checked || document.hidden || !state.feed?.supported)
+    return;
+  const watcher = planner.watchRealtime({
+    intervalMs: LIVE_INTERVAL_MS,
+    immediate,
+  });
+  watcher.addEventListener("poll", (event) => {
+    state.feed = summarizeFeeds(event.detail);
+    state.checkedAt = Date.now();
+    showLive("live");
+  });
+  watcher.addEventListener("update", () => refreshJourneys());
+  watcher.addEventListener("error", () => showLive("stale"));
+  state.watcher = watcher;
+}
+
+function stopWatching() {
+  state.watcher?.stop();
+  state.watcher = null;
+}
+
+el("live-toggle").addEventListener("change", () => {
+  if (el("live-toggle").checked) {
+    startWatching({ immediate: true });
+    showLive("live");
+  } else {
+    stopWatching();
+    showLive("off");
+  }
+});
+
+el("live-now").addEventListener("click", async () => {
+  const button = el("live-now");
+  button.disabled = true;
+  try {
+    state.feed = summarizeFeeds(await planner.refreshRealtime());
+    state.checkedAt = Date.now();
+    await refreshJourneys();
+    showLive(state.watcher ? "live" : "off");
+  } catch (error) {
+    console.error(error);
+    showLive("stale");
+  } finally {
+    button.disabled = false;
+  }
+});
+
+// A hidden tab does not poll; coming back checks at once.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopWatching();
+  else startWatching({ immediate: true });
 });
 
 ensureRouteMap().catch(routeMapError);

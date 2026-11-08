@@ -526,3 +526,82 @@ td {
   border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
+
+/* Live real-time updates */
+.live-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.live-status[hidden] {
+  display: none;
+}
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.live-status.is-live .live-dot {
+  background: var(--accent);
+  animation: live-pulse 2s ease-in-out infinite;
+}
+.live-status.is-stale .live-dot {
+  background: var(--danger);
+}
+.live-status.is-flash {
+  border-color: var(--accent);
+}
+#live-text {
+  flex: 1 1 14rem;
+}
+.live-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.live-now {
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.live-now:hover,
+.live-now:focus-visible {
+  border-color: var(--accent);
+}
+.leg .delay {
+  margin-left: 4px;
+  color: var(--danger);
+  font-weight: 700;
+}
+.leg .platform {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--border);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+@keyframes live-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .live-status.is-live .live-dot {
+    animation: none;
+  }
+}

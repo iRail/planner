@@ -1,5 +1,6 @@
-import type { IrailApi, PlannerRequests } from "./index.mjs";
-export class PlannerClient implements PlannerRequests, IrailApi {
+import type { IrailApi, PlannerRequests, RealtimeApi } from "./index.mjs";
+export { RealtimeWatcher } from "./index.mjs";
+export class PlannerClient implements PlannerRequests, IrailApi, RealtimeApi {
   constructor(worker: Worker);
   request: PlannerRequests["request"];
   stations: IrailApi["stations"];
@@ -9,6 +10,8 @@ export class PlannerClient implements PlannerRequests, IrailApi {
   composition: IrailApi["composition"];
   disturbances: IrailApi["disturbances"];
   occupancyFeedback: IrailApi["occupancyFeedback"];
+  refreshRealtime: RealtimeApi["refreshRealtime"];
+  watchRealtime: RealtimeApi["watchRealtime"];
   close(): void;
 }
 export function createPlannerWorker(): Worker;
