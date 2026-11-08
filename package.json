@@ -25,8 +25,8 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "test": "node --test --test-isolation=none test/*.test.mjs",
-    "test:coverage": "node --experimental-test-coverage --test --test-isolation=none test/*.test.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:coverage": "node --experimental-test-coverage --test test/*.test.mjs",
     "dev": "node scripts/build-demo.mjs && vite --host 127.0.0.1",
     "build": "npm run build:playground",
     "build:playground": "node scripts/build-demo.mjs && vite build",
