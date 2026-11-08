@@ -198,6 +198,9 @@ export function createProfileSearch(
     walking.push(meters);
     targets.push(target);
   }
+  // Where each trip that another trip continues as (a split or joined train)
+  // can be ridden on from: run -> station root -> { time, options }.
+  const linkedDepartures = new Map();
   let currentTime = NaN;
   let equalTimeTrips = new Map();
   let acceptedRows = 0;
@@ -245,6 +248,20 @@ export function createProfileSearch(
     )
       for (const id of previous.options)
         offer(store.arrival[id], store.rides[id], 1, id);
+    // In-seat transfer: this trip continues as another one at this stop, so
+    // the rest of that trip is ridden without getting off. It is one ride for
+    // the traveller, shown as two legs, and needs no transfer time.
+    const links = network.linked.get(trip);
+    if (links)
+      for (const link of links) {
+        if (network.root[link.stop] !== aRoot) continue;
+        const boarding = linkedDepartures
+          .get(serviceDate * network.tripCount + link.trip)
+          ?.get(aRoot);
+        if (boarding && boarding.time >= arr)
+          for (const id of boarding.options)
+            offer(store.arrival[id], store.rides[id], 3, id);
+      }
     if ((batch.dropOff?.[row] ?? 0) === 0) {
       const meters = egress.get(aRoot);
       if (meters !== undefined && arr + meters / WALK_SPEED <= to)
@@ -300,7 +317,10 @@ export function createProfileSearch(
       const boardable =
         (batch.pickup?.[row] ?? 0) === 0 &&
         !store.dominated(dRoot, dep, arrivals[i], rides[i], context);
-      if (kinds[i] === 1 && !boardable) {
+      // A trip that another trip continues as keeps its own label even when an
+      // identical twin dominates it for boarders: riders staying seated get it
+      // without the extra ride the twin would cost them.
+      if (kinds[i] === 1 && !boardable && !network.linkTargets.has(trip)) {
         options.push(refs[i]);
         continue;
       }
@@ -311,6 +331,8 @@ export function createProfileSearch(
         alight = store.alightStop[refs[i]];
         alightTime = store.alightTime[refs[i]];
         next = store.next[refs[i]];
+      } else if (kinds[i] === 3) {
+        next = refs[i];
       } else if (kinds[i] === 2) {
         next = refs[i];
         if (targets[i] !== aRoot)
@@ -361,6 +383,15 @@ export function createProfileSearch(
       if (boardable) {
         changed = store.insert(dRoot, id, false) || changed;
         canBoard = true;
+      }
+    }
+    if (network.linkTargets.has(trip)) {
+      const continuing = options.filter(
+        (id) => store.boardStop[id] === dS && store.trip[id] === trip,
+      );
+      if (continuing.length) {
+        if (!linkedDepartures.has(run)) linkedDepartures.set(run, new Map());
+        linkedDepartures.get(run).set(dRoot, { time: dep, options: continuing });
       }
     }
     const state = {

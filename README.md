@@ -360,11 +360,20 @@ the same run requires consecutive stop sequences and incurs no transfer time.
 Pickup/drop-off types 1, 2 and 3 cannot be used for ordinary boarding/alighting;
 remaining aboard is permitted.
 
+**Trains that split or join.** Transfer type 4 ("in-seat transfer") links a trip to the
+trip it continues as at one stop, for example a train that changes number or loses
+or gains coaches. Riders stay seated: the planner follows the link without a transfer
+and without transfer time, on the same service date. A journey over a link has two ride legs
+(one per trip, the second boarding at the stop where the first alights) but is one ride:
+it does not count as a transfer, so `transfers` is smaller than `legs.length - 1`.
+Type 5 ("riders must get off") is what a transfer already means and changes nothing.
+Links work in both window modes and in isochrones.
+
 Current limits:
 
-- Real-time data is limited to GTFS Realtime trip updates; linked trips, alerts and
-  vehicle positions are not read.
-- Linked trips (transfer types 4/5) are not implemented; such tables fail explicitly.
+- Real-time data is limited to GTFS Realtime trip updates; alerts and vehicle positions
+  are not read.
+- Transfer types above 5 fail explicitly.
 - Transfer overrides between different stations are ignored. Walking between
   stations uses physical distance. Street paths, accessibility, barriers and fares are not modeled.
 - Shapes are not part of this implementation; maps connect stop coordinates.

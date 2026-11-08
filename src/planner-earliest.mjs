@@ -15,6 +15,9 @@ export function createEarliestSearch(
   const arrivals = new Float64Array(network.stopCount).fill(Infinity);
   const rideArrivals = new Array(network.stopCount);
   const tripBest = new Map();
+  // Runs that can be ridden on from a stop without boarding, because the trip
+  // before them (a split or joined train) arrived there: run -> root -> time.
+  const linkedArrival = new Map();
   let currentTime = NaN;
   let equalTimeTrips = new Map();
   let arrival =
@@ -46,18 +49,20 @@ export function createEarliestSearch(
     const dS = source.stopOffset + batch.dS[row];
     const aS = source.stopOffset + batch.aS[row];
     const trip = source.tripOffset + batch.trip[row];
-    const run = (batch.serviceDate?.[row] || 0) * network.tripCount + trip;
+    const serviceDate = batch.serviceDate?.[row] || 0;
+    const run = serviceDate * network.tripCount + trip;
     const key = (stop, sequence) =>
       batch.arrivalStopSequence ? `${stop}/${sequence}` : stop;
     const sameTime = equalTimeTrips.get(run);
     const previous = tripBest.get(run);
+    const boardingRoot = network.root[dS];
     const aboard =
+      (linkedArrival.get(run)?.get(boardingRoot) ?? Infinity) <= dep ||
       (sameTime?.get(key(dS, batch.stopSequence?.[row])) ?? Infinity) <= dep ||
       (previous?.stop === dS &&
         previous.time <= dep &&
         (!batch.arrivalStopSequence ||
           previous.sequence === batch.stopSequence[row]));
-    const boardingRoot = network.root[dS];
     const canTransfer = () => {
       if (walkReady[boardingRoot] <= dep) return true;
       for (const state of rideArrivals[boardingRoot]?.values() || [])
@@ -89,6 +94,18 @@ export function createEarliestSearch(
       time: arr,
       sequence: batch.arrivalStopSequence?.[row],
     });
+    const links = network.linked.get(trip);
+    if (links)
+      for (const link of links) {
+        if (network.root[link.stop] !== network.root[aS]) continue;
+        const linkedRun = serviceDate * network.tripCount + link.trip;
+        if (!linkedArrival.has(linkedRun)) linkedArrival.set(linkedRun, new Map());
+        const times = linkedArrival.get(linkedRun);
+        if (arr < (times.get(network.root[aS]) ?? Infinity)) {
+          times.set(network.root[aS], arr);
+          changed = true;
+        }
+      }
     // Continue the vehicle in its next departure region even if alighting
     // here is forbidden. Stop reachability still requires usable drop-off.
     activate?.(network.root[aS], arr);

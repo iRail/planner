@@ -90,12 +90,37 @@ export async function loadLCTimetable(manifest, url, loadTable) {
     while (stops.parentIdx[stop] !== -1) stop = stops.parentIdx[stop];
     return stop;
   };
+  // In-seat (linked-trip) transfers: a train that splits or joins keeps its
+  // passengers seated while the trip changes. `linkedTrips` maps a trip to the
+  // trips it continues as, each at one stop.
+  const linkedTrips = new Map();
   if (tables.transfers)
     for (const row of tables.transfers) {
-      if (row.transferType >= 4)
-        throw new Error(
-          "Linked-trip transfers (types 4 and 5) are not supported yet",
-        );
+      if (row.transferType > 5)
+        throw new Error(`Unsupported transfer type: ${row.transferType}`);
+      // Type 5 says riders must get off, which is what a transfer between two
+      // trips already means: nothing to record.
+      if (row.transferType === 5) continue;
+      if (row.transferType === 4) {
+        const { fromTripIdx: from, toTripIdx: to, fromStopIdx: stop } = row;
+        if (
+          from == null ||
+          to == null ||
+          stop == null ||
+          row.toStopIdx !== stop ||
+          !stops.transferRules[stop] ||
+          from < 0 ||
+          to < 0 ||
+          from >= tables.trips.numRows ||
+          to >= tables.trips.numRows
+        )
+          throw new Error(
+            "Linked-trip transfer needs two trips and one stop of this timetable",
+          );
+        if (!linkedTrips.has(from)) linkedTrips.set(from, []);
+        linkedTrips.get(from).push({ to, stop });
+        continue;
+      }
       if (
         row.fromStopIdx == null ||
         row.toStopIdx == null ||
@@ -131,6 +156,7 @@ export async function loadLCTimetable(manifest, url, loadTable) {
   return {
     manifestUrl: url,
     stops,
+    linkedTrips,
     tables,
     tripRoutes: tables.trips.getChild("routeIdx").toArray(),
     stopFamily: { childrenOf, searchable },

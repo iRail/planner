@@ -104,6 +104,10 @@ export interface Journey {
   /** UTC epoch seconds, including real-time delays of the trains taken. */
   departure: number;
   arrival: number;
+  /**
+   * Changes of train. Staying seated while a train splits or joins (two ride
+   * legs, one ride) is not a transfer, so this can be less than `legs.length - 1`.
+   */
   transfers: number;
   legs: (RideLeg | WalkLeg)[];
 }
@@ -295,6 +299,7 @@ export interface Connection {
   arrivalDelay: number;
   /** Scheduled duration, in seconds. */
   duration: number;
+  /** Changes of train; staying seated while a train splits or joins is not one. */
   transfers: number;
   legs: ConnectionLeg[];
 }

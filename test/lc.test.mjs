@@ -457,10 +457,231 @@ test("old manifests, unsupported schemas and linked-trip transfers fail explicit
       /Unsupported Linked Connections schema/,
     );
   }
+  for (const transfers of [
+    [{ transferType: 6 }],
+    [{ transferType: 4, fromTripIdx: 0, toTripIdx: 1 }],
+    [{ transferType: 4, fromStopIdx: 1, toStopIdx: 1, fromTripIdx: 0, toTripIdx: 99 }],
+    [{ transferType: 4, fromStopIdx: 1, toStopIdx: 2, fromTripIdx: 0, toTripIdx: 1 }],
+  ]) {
+    const f = await setup(t, { transfers });
+    await assert.rejects(f.planner.init(), /Unsupported transfer type|Linked-trip transfer needs/);
+  }
+});
+
+// Trip 0 rides Origin → Interchange and trip 1 Interchange → Destination, which
+// leaves a minute after trip 0 arrives: too little for the five-minute transfer
+// rule, but fine for riders who stay seated because the train splits or joins.
+// Trip 2 is the next ordinary train to Destination.
+const seatRows = (extra = {}) => [
+  {
+    departureStopIdx: 0,
+    arrivalStopIdx: 1,
+    departureTimeOffset: 0,
+    arrivalTimeOffset: 600,
+    tripIdx: 0,
+    stopSequence: 1,
+    arrivalStopSequence: 2,
+  },
+  {
+    departureStopIdx: 1,
+    arrivalStopIdx: 2,
+    departureTimeOffset: 660,
+    arrivalTimeOffset: 1200,
+    tripIdx: 1,
+    stopSequence: 1,
+    arrivalStopSequence: 2,
+    ...extra,
+  },
+  {
+    departureStopIdx: 1,
+    arrivalStopIdx: 2,
+    departureTimeOffset: 1500,
+    arrivalTimeOffset: 2100,
+    tripIdx: 2,
+    stopSequence: 1,
+    arrivalStopSequence: 2,
+  },
+];
+const transferRule = { fromStopIdx: 1, toStopIdx: 1, transferType: 2, minTransferTime: 300 };
+const seatLink = (overrides = {}) => ({
+  fromStopIdx: 1,
+  toStopIdx: 1,
+  transferType: 4,
+  fromTripIdx: 0,
+  toTripIdx: 1,
+  ...overrides,
+});
+async function seatPlan(t, { rows = seatRows(), links = [seatLink()], ...rest } = {}) {
   const f = await setup(t, {
-    transfers: [{ transferType: 4, fromTripIdx: 0, toTripIdx: 1 }],
+    connections: rows,
+    transfers: [transferRule, ...links],
   });
-  await assert.rejects(f.planner.init(), /Linked-trip transfers/);
+  await f.planner.init();
+  return { ...f, result: await f.planner.plan({ ...query, ...rest }) };
+}
+
+test("without a link, the tight connection is missed and the next train is taken", async (t) => {
+  const { result } = await seatPlan(t, { links: [] });
+  assert.equal(result.options[0].arrival, start + 2100);
+  assert.equal(result.options[0].transfers, 1);
+});
+
+test("a linked trip is ridden on without a transfer: two legs, one ride, no transfer time", async (t) => {
+  const { result } = await seatPlan(t);
+  const [journey] = result.options;
+  assert.equal(journey.arrival, start + 1200);
+  assert.equal(journey.transfers, 0, "staying seated is not a transfer");
+  assert.equal(result.options.length, 1, "the later train is no better");
+  assert.equal(journey.legs.length, 2);
+  const [first, second] = journey.legs;
+  assert.deepEqual(
+    [first.trip, first.boardStop, first.alightStop, first.alightTime],
+    [0, 0, 1, start + 600],
+  );
+  assert.deepEqual(
+    [second.trip, second.boardStop, second.alightStop, second.boardTime],
+    [1, 1, 2, start + 660],
+  );
+});
+
+test("both window modes find it, and the adaptive window is sized from it", async (t) => {
+  for (const windowMode of ["full", "adaptive"]) {
+    const { result } = await seatPlan(t, { windowMode });
+    assert.equal(result.options[0].arrival, start + 1200, windowMode);
+    assert.equal(result.options[0].transfers, 0, windowMode);
+  }
+  const { result } = await seatPlan(t, { windowMode: "adaptive" });
+  assert.equal(result.window.earliestArrival, start + 1200);
+});
+
+test("the continuing trip need not be boardable at the link's stop", async (t) => {
+  const { result } = await seatPlan(t, { rows: seatRows({ pickupType: 1 }) });
+  assert.equal(result.options[0].arrival, start + 1200);
+  assert.equal(result.options[0].transfers, 0);
+  // Nobody can get on there, though: from Interchange the next train is trip 2.
+  const board = await seatPlan(t, {
+    rows: seatRows({ pickupType: 1 }),
+    origin: { sourceId: "default", stopIdx: 1 },
+  });
+  assert.equal(board.result.options[0].arrival, start + 2100);
+});
+
+test("a link only joins trips of the same service date", async (t) => {
+  const { result } = await seatPlan(t, { rows: seatRows({ serviceDate: 20261109 }) });
+  assert.equal(result.options[0].arrival, start + 2100);
+});
+
+test("a link applies at its own stop, from its own trip, in its own direction", async (t) => {
+  // None of these links helps the traveller reach trip 1: the tight connection is still missed.
+  for (const link of [
+    seatLink({ fromStopIdx: 0, toStopIdx: 0 }), // another stop
+    seatLink({ fromTripIdx: 1, toTripIdx: 0 }), // the other direction
+  ]) {
+    const { result } = await seatPlan(t, { links: [link] });
+    assert.equal(result.options[0].arrival, start + 2100, JSON.stringify(link));
+    assert.equal(result.options[0].transfers, 1, JSON.stringify(link));
+  }
+  // A link to the later train is a real link: staying seated until it leaves.
+  const { result } = await seatPlan(t, { links: [seatLink({ toTripIdx: 2 })] });
+  assert.equal(result.options[0].arrival, start + 2100);
+  assert.equal(result.options[0].transfers, 0);
+  assert.deepEqual(result.options[0].legs.map((leg) => leg.trip), [0, 2]);
+});
+
+test("a train that splits in two can be followed into either half", async (t) => {
+  const rows = [
+    ...seatRows(),
+    {
+      departureStopIdx: 1,
+      arrivalStopIdx: 3,
+      departureTimeOffset: 660,
+      arrivalTimeOffset: 1000,
+      tripIdx: 3,
+      stopSequence: 1,
+      arrivalStopSequence: 2,
+    },
+  ];
+  const links = [seatLink(), seatLink({ toTripIdx: 3 })];
+  const toDestination = await seatPlan(t, { rows, links });
+  assert.equal(toDestination.result.options[0].arrival, start + 1200);
+  const toOther = await seatPlan(t, {
+    rows,
+    links,
+    destination: { sourceId: "default", stopIdx: 3 },
+  });
+  assert.equal(toOther.result.options[0].arrival, start + 1000);
+  assert.equal(toOther.result.options[0].transfers, 0);
+});
+
+test("a linked trip is still followed when an identical twin trip would shadow it", async (t) => {
+  // Real feeds publish the same train as several trips with identical times,
+  // and trips have several stops, so the continuing trip's first connection is
+  // itself a through-ride. Only one twin is linked from trip 0; the planner
+  // must not drop it because the other one runs at the same instants.
+  const continuing = (tripIdx) => [
+    {
+      departureStopIdx: 1,
+      arrivalStopIdx: 3,
+      departureTimeOffset: 660,
+      arrivalTimeOffset: 900,
+      tripIdx,
+      stopSequence: 1,
+      arrivalStopSequence: 2,
+    },
+    {
+      departureStopIdx: 3,
+      arrivalStopIdx: 2,
+      departureTimeOffset: 900,
+      arrivalTimeOffset: 1200,
+      tripIdx,
+      stopSequence: 2,
+      arrivalStopSequence: 3,
+    },
+  ];
+  for (const [linked, twinFirst] of [
+    [1, true],
+    [1, false],
+    [3, true],
+    [3, false],
+  ]) {
+    const rows = [
+      seatRows()[0],
+      ...(twinFirst
+        ? [...continuing(linked === 1 ? 3 : 1), ...continuing(linked)]
+        : [...continuing(linked), ...continuing(linked === 1 ? 3 : 1)]),
+      seatRows()[2],
+    ];
+    const { result } = await seatPlan(t, {
+      rows,
+      links: [seatLink({ toTripIdx: linked })],
+    });
+    const [journey] = result.options;
+    const label = `link to trip ${linked}, twin ${twinFirst ? "first" : "last"}`;
+    assert.equal(journey.arrival, start + 1200, label);
+    assert.equal(journey.transfers, 0, label);
+    assert.deepEqual(journey.legs.map((leg) => leg.trip), [0, linked], label);
+  }
+});
+
+test("transfer type 5 (riders must get off) changes nothing", async (t) => {
+  const { result } = await seatPlan(t, { links: [seatLink({ transferType: 5 })] });
+  assert.equal(result.options[0].arrival, start + 2100);
+});
+
+test("isochrones follow linked trips too", async (t) => {
+  const reach = async (links) => {
+    const f = await setup(t, { connections: seatRows(), transfers: [transferRule, ...links] });
+    await f.planner.init();
+    const surface = await f.planner.isochrone({
+      origin: { lat: 51, lon: 4 },
+      departureAfter: start,
+      maxWalkMeters: 100,
+      maxDurationSeconds: 3000,
+    });
+    return surface.points.find((point) => point.name === "Destination")?.durationSeconds;
+  };
+  assert.equal(await reach([seatLink()]), 1200);
+  assert.equal(await reach([]), 2100);
 });
 
 test("transfer overrides between different stations are ignored", async (t) => {

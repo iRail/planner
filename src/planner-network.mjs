@@ -172,12 +172,28 @@ export function buildNetwork(sources, maxWalkMeters) {
       lon: (Math.atan2(y[r], x[r]) * 180) / Math.PI,
     };
   };
+  // In-seat transfers in network numbering: trip -> [{ trip, stop }].
+  const linked = new Map();
+  for (const source of selected)
+    for (const [from, links] of source.linkedTrips ?? [])
+      linked.set(
+        source.tripOffset + from,
+        links.map((link) => ({
+          trip: source.tripOffset + link.to,
+          stop: source.stopOffset + link.stop,
+        })),
+      );
+  const linkTargets = new Set(
+    [...linked.values()].flatMap((links) => links.map((link) => link.trip)),
+  );
   return {
     sources: selected,
     root,
     owner,
     stopCount,
     tripCount,
+    linked,
+    linkTargets,
     ...buildTransferRules(selected, root, owner),
     neighbors,
     pointNeighbors,
