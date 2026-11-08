@@ -492,11 +492,11 @@ a {
   border-radius: 8px;
   cursor: pointer;
 }
-.wip-notice {
+.notice {
   margin: 0 0 1rem;
   padding: 0.65rem 0.9rem;
   border: 1px solid var(--border);
-  border-left: 4px solid var(--danger);
+  border-left: 4px solid var(--accent);
   border-radius: 8px;
   background: var(--panel);
   font-size: 0.9rem;

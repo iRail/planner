@@ -1,9 +1,23 @@
 # iRail planner
 
-> **Work in progress: not yet published on npm.** `npm install @irail/planner`
-> does not work yet. Until the first release, install from a checkout of this
-> repository (see [Install and use in Node.js](#install-and-use-in-nodejs)). The API
-> may change without notice.
+[![npm version](https://img.shields.io/npm/v/@irail/planner?color=c72929&logo=npm)](https://www.npmjs.com/package/@irail/planner)
+[![npm downloads](https://img.shields.io/npm/dm/@irail/planner?color=c72929)](https://www.npmjs.com/package/@irail/planner)
+[![CI](https://github.com/iRail/planner/actions/workflows/pages.yml/badge.svg?branch=main)](https://github.com/iRail/planner/actions/workflows/pages.yml)
+[![License: MIT](https://img.shields.io/npm/l/@irail/planner)](LICENSE)
+[![Node.js version](https://img.shields.io/node/v/@irail/planner?logo=nodedotjs&logoColor=white)](https://nodejs.org)
+[![TypeScript types included](https://img.shields.io/npm/types/@irail/planner)](https://www.npmjs.com/package/@irail/planner)
+[![Playground](https://img.shields.io/badge/playground-irail.github.io%2Fplanner-c72929)](https://irail.github.io/planner/)
+
+```sh
+npm install @irail/planner
+```
+
+**You can start working with `@irail/planner` today.** It is an ESM library for Node.js
+22.12+ and modern browsers, with TypeScript types included. Try it in the
+[playground](https://irail.github.io/planner/) first, or jump to
+[Install and use in Node.js](#install-and-use-in-nodejs). It is a `0.x` release on a
+draft specification, so the API can still change between minor versions; pin the
+version you use.
 
 An ESM npm library for journey planning over **Linked Connections 2.0-alpha**
 (`schemaVersion: "2-alpha"`) in Node.js and modern browsers. It scans Apache Arrow
@@ -17,27 +31,21 @@ vehicle) from the same data; see [iRail API calls](#irail-api-calls).
 [LC 2.0-alpha draft](https://linkedconnections.org/specification/2-0-alpha) ·
 [Draft proposal](https://github.com/linkedconnections/website/pull/14)
 
-This is an alpha library targeting the draft dated 7 November 2026. The original
+The library targets the Linked Connections draft dated 7 November 2026. The original
 GTFS-to-Arrow manifest formats are not supported. The playground is built and
-published by the included GitHub Actions workflow once Pages is enabled.
+published by the included GitHub Actions workflow.
 
 ## Install and use in Node.js
 
 Requires Node.js **22.12 or newer**. The library is native JavaScript ESM; its npm
 package ships `src/` and TypeScript declarations without a compilation step.
 
-**The package is not yet published on npm.** For now, install a checkout of this
-repository:
-
 ```sh
-git clone https://github.com/iRail/planner
-cd planner && npm ci
-npm install /path/to/planner   # from your own project
+npm install @irail/planner
 ```
 
-Once it is published, the install will be `npm install @irail/planner`. The
-examples below already use that package name; inside this repository, run them
-after `npm ci`.
+To work on the library itself, clone the repository and run `npm ci` instead; see
+[Development](#development-playground-and-github-pages).
 
 ```js
 import { createPlanner } from "@irail/planner";

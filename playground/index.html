@@ -19,9 +19,12 @@
           >Linked Connections 2.0-alpha</a
         >, in Node.js and your browser.
       </p>
-      <p class="wip-notice" role="note">
-        <strong>Work in progress.</strong> <code>@irail/planner</code> is not
-        yet published on npm, and it targets a draft specification.
+      <p class="notice" role="note">
+        <strong>Now on npm:</strong>
+        <a href="https://www.npmjs.com/package/@irail/planner"
+          ><code>npm install @irail/planner</code></a
+        >. A <code>0.x</code> release on a draft specification: the API can
+        still change between minor versions.
       </p>
       <nav class="site-nav" aria-label="Main navigation">
         <a href="#playground">Playground</a><a href="#quickstart">Quick start</a
@@ -249,21 +252,8 @@
           returns alternatives with departure time, arrival time and vehicle
           changes.
         </p>
-        <p>
-          <strong>Not yet published on npm.</strong> This is a work in
-          progress: <code>npm install @irail/planner</code> will not work until
-          the first release. For now, clone the
-          <a href="https://github.com/iRail/planner">repository</a> and install
-          from the checkout:
-        </p>
-        <pre><code>git clone https://github.com/iRail/planner
-cd planner &amp;&amp; npm ci
-npm install /path/to/planner   # from your own project</code></pre>
-        <p>
-          Start the playground locally with
-          <code>npm run dev</code>. This Node.js example reads the live iRail
-          CDN timetable; pick stops by name instead of fixed indices:
-        </p>
+        <pre><code>npm install @irail/planner</code></pre>
+        <p>This Node.js example reads the live iRail CDN timetable:</p>
         <pre><code>import { createPlanner } from '@irail/planner';
 
 const planner = createPlanner({
@@ -283,7 +273,14 @@ console.log(result.options);</code></pre>
           Stop indices refer to the loaded source.
           <code>source.stops.id</code> contains the publisher's stop IRIs; find
           an index with <code>source.stops.id.indexOf(stopIri)</code>, or use
-          <code>{ lon, lat }</code> as either endpoint.
+          <code>{ lon, lat }</code> as either endpoint. To work with station
+          names instead, use the <a href="#irail-api">iRail calls</a>.
+        </p>
+        <p>
+          To work on the library itself, clone the
+          <a href="https://github.com/iRail/planner">repository</a>, run
+          <code>npm ci</code>, and start this playground locally with
+          <code>npm run dev</code>.
         </p>
         <h3>Keep the browser responsive</h3>
         <p>
