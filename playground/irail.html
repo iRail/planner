@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#C72929" />
+    <meta
+      name="description"
+      content="Plan a Belgian train journey with the iRail API and with the iRail planner library side by side, and compare the journeys and the speed."
+    />
+    <link rel="icon" type="image/svg+xml" href="./irail/logo.svg" />
+    <title>iRail routeplanner comparison</title>
+    <link rel="stylesheet" href="./irail/irail-be.css" />
+    <link rel="stylesheet" href="./irail/compare.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="./irail.html" aria-label="iRail comparison home">
+        <img class="brand-logo" src="./irail/logo.svg" alt="" />
+        <span>iRail</span>
+      </a>
+      <nav class="view-nav" aria-label="App sections">
+        <a class="nav-link-button is-active" href="./irail.html">Plan route</a>
+        <a class="nav-link-button" href="./">Planner playground</a>
+      </nav>
+    </header>
+
+    <main class="app-shell">
+      <div class="view-heading">
+        <h1>Find a train</h1>
+        <p>
+          Every search runs twice: against
+          <a href="https://api.irail.be">api.irail.be</a> and with the
+          <a href="https://github.com/iRail/planner">iRail planner</a> library
+          on the open Linked Connections 2.0-alpha timetable. Then the two
+          answers and their speed are compared.
+        </p>
+      </div>
+
+      <form id="route-form" class="search-panel" autocomplete="off">
+        <div class="station-grid">
+          <div class="field autocomplete-field">
+            <label for="route-from">From</label>
+            <input
+              id="route-from"
+              type="text"
+              placeholder="Type departure station"
+              autocorrect="off"
+              autocapitalize="off"
+              spellcheck="false"
+              disabled
+              role="combobox"
+              aria-expanded="false"
+              aria-controls="route-from-menu"
+            />
+            <div
+              class="autocomplete-menu"
+              id="route-from-menu"
+              role="listbox"
+            ></div>
+          </div>
+
+          <button
+            class="swap-button"
+            type="button"
+            id="route-swap"
+            title="Reverse route"
+            aria-label="Reverse route"
+          >
+            <span aria-hidden="true">⇄</span>
+          </button>
+
+          <div class="field autocomplete-field">
+            <label for="route-to">To</label>
+            <input
+              id="route-to"
+              type="text"
+              placeholder="Type destination station"
+              autocorrect="off"
+              autocapitalize="off"
+              spellcheck="false"
+              disabled
+              role="combobox"
+              aria-expanded="false"
+              aria-controls="route-to-menu"
+            />
+            <div
+              class="autocomplete-menu"
+              id="route-to-menu"
+              role="listbox"
+            ></div>
+          </div>
+        </div>
+
+        <div class="time-grid">
+          <div class="field compact-field">
+            <label for="route-time">Departure time</label>
+            <input
+              id="route-time"
+              type="text"
+              data-date-time="time"
+              placeholder="HH:MM"
+              maxlength="5"
+              pattern="([01][0-9]|2[0-3]):[0-5][0-9]"
+              aria-describedby="format-note"
+              required
+            />
+          </div>
+          <div class="field compact-field">
+            <label for="route-date">Date</label>
+            <input
+              id="route-date"
+              type="text"
+              data-date-time="date"
+              placeholder="DD/MM/YYYY"
+              maxlength="10"
+              pattern="[0-9]{2}/[0-9]{2}/[0-9]{4}"
+              aria-describedby="format-note"
+              required
+            />
+          </div>
+          <div class="field compact-field">
+            <label for="route-walk">Max walk (m)</label>
+            <input
+              id="route-walk"
+              type="number"
+              min="0"
+              max="5000"
+              step="50"
+              value="0"
+              aria-describedby="walk-note"
+            />
+          </div>
+          <div class="field compact-field">
+            <label for="route-window">Planner window</label>
+            <select id="route-window" aria-describedby="window-note">
+              <option value="adaptive">Adaptive</option>
+              <option value="full">Full 24 h</option>
+            </select>
+          </div>
+          <button
+            class="primary-button"
+            id="route-search"
+            type="submit"
+            disabled
+          >
+            Search
+          </button>
+        </div>
+        <p class="form-note" id="format-note">
+          Times are Belgian local time (DD/MM/YYYY, 24-hour HH:MM). Both sides
+          look for departures at or after this time.
+          <span id="walk-note"
+            >Walking between stations is off by default, like in the iRail
+            API.</span
+          >
+          <span id="window-note"
+            >The adaptive window is a faster heuristic that can miss slower
+            journeys arriving late; the full window searches 24 hours but
+            still returns at most six alternatives.</span
+          >
+        </p>
+      </form>
+
+      <div id="planner-status" class="alert alert-info" role="status">
+        Loading the planner's timetable…
+      </div>
+      <div id="route-alert"></div>
+      <div id="route-results" aria-live="polite"></div>
+    </main>
+
+    <footer class="site-footer">
+      <p>
+        iRail API results are realtime; planner results use the scheduled
+        timetable.
+      </p>
+      <p id="data-source"></p>
+    </footer>
+
+    <script type="module" src="./irail.mjs"></script>
+  </body>
+</html>

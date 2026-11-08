@@ -11,6 +11,7 @@ connection pages locally, supports multiple networks and walking, and returns
 journey alternatives with publisher-provided IRIs.
 
 [Playground and documentation](https://irail.github.io/planner/) ·
+[iRail API comparison](https://irail.github.io/planner/irail.html) ·
 [LC 2.0-alpha draft](https://linkedconnections.org/specification/2-0-alpha) ·
 [Draft proposal](https://github.com/linkedconnections/website/pull/14)
 
@@ -243,11 +244,23 @@ with invented services between Belgian stations, is generated during the build a
 available at `?data=./data/`; it is not a real timetable. Maps and contours load MapLibre, d3-contour and OpenStreetMap
 resources on demand; Arrow and routing dependencies are bundled locally.
 
+The playground has a second page, `irail.html`, styled like irail.be. It plans each
+search twice, with `https://api.irail.be/v1/connections` and with the planner
+library on the iRail CDN data, then shows the journeys side by side with a diff
+(identical, other arrival, only in one side, slower journeys the planner omits by
+design, arrivals beyond the planner's adaptive window) and timings: first request
+and repeat for both, plus the planner's one-off start-up. API results include
+realtime delays and cancellations, planner results are scheduled only, so
+differences are expected and each carries a reason. Stations are matched through
+their NMBS station number. The page needs the iRail CDN data and CORS access to
+`api.irail.be`; the bundled sample timetable has no matching stations.
+
 [`.github/workflows/pages.yml`](.github/workflows/pages.yml) tests on Node 22 and 24,
 checks npm packaging, builds the playground on pushes and pull requests, and
 uploads `dist/playground/` as a Pages artifact. Pushes to the default branch and
 manual runs deploy it. In repository **Settings → Pages → Build and deployment**,
-choose **GitHub Actions**. Optionally set the repository variable
+choose **GitHub Actions**. The build also publishes the iRail API comparison page, `irail.html`. Optionally
+set the repository variable
 `PLANNER_DATA_URL` to use a different LC alpha manifest URL than the iRail CDN. Relative asset paths support
 both repository subpaths and domain roots. No site or package is published by
 running local build commands.

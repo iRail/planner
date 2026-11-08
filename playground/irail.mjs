@@ -1,0 +1,653 @@
+import { resolveDataUrl } from "../src/planner-config.mjs";
+import { PlannerClient, createPlannerWorker } from "../src/browser.mjs";
+import { dataUrl } from "./config.mjs";
+import {
+  apiConnectionsUrl,
+  buildStations,
+  compareJourneys,
+  median,
+  normalizeApiConnection,
+  normalizePlannerJourney,
+  searchStations,
+  stationKey,
+  zonedParts,
+  zonedToEpoch,
+} from "./compare.mjs";
+import {
+  dateInputToIso,
+  isoToDateInput,
+  isValidTimeInput,
+} from "./irail/date-time.mjs";
+
+const el = (id) => document.getElementById(id);
+const els = {
+  form: el("route-form"),
+  from: el("route-from"),
+  to: el("route-to"),
+  time: el("route-time"),
+  date: el("route-date"),
+  walk: el("route-walk"),
+  window: el("route-window"),
+  search: el("route-search"),
+  swap: el("route-swap"),
+  status: el("planner-status"),
+  alert: el("route-alert"),
+  results: el("route-results"),
+};
+
+const state = {
+  planner: null,
+  source: null,
+  stations: [],
+  from: null,
+  to: null,
+  initMs: 0,
+  coverage: { start: -Infinity, end: Infinity },
+  running: false,
+  history: [], // one timing record per finished search in this session
+};
+
+const pad = (n) => String(n).padStart(2, "0");
+const escapeHtml = (value) =>
+  String(value ?? "").replace(
+    /[&<>"']/gu,
+    (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+        c
+      ],
+  );
+
+const timeFormat = new Intl.DateTimeFormat("en-GB", {
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+  timeZone: "Europe/Brussels",
+});
+const formatTime = (seconds) => timeFormat.format(new Date(seconds * 1000));
+function formatDuration(seconds) {
+  const minutes = Math.round(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  return `${hours ? `${hours} h ` : ""}${minutes % 60 ? `${minutes % 60} min` : ""}`.trim() || "0 min";
+}
+const formatMs = (ms) =>
+  ms === undefined
+    ? "–"
+    : ms < 10
+      ? `${ms.toFixed(1)} ms`
+      : ms < 1000
+        ? `${Math.round(ms)} ms`
+        : `${(ms / 1000).toFixed(2)} s`;
+const transfersLabel = (n) =>
+  n === 0 ? "direct" : `${n} transfer${n === 1 ? "" : "s"}`;
+
+// ---------------------------------------------------------------- inputs
+
+function validateDateTime(input) {
+  const isDate = input.dataset.dateTime === "date";
+  const valid = isDate
+    ? Boolean(dateInputToIso(input.value))
+    : isValidTimeInput(input.value);
+  input.setCustomValidity(
+    input.value && !valid
+      ? isDate
+        ? "Use DD/MM/YYYY, for example 08/11/2026."
+        : "Use 24-hour time (HH:MM), for example 14:05."
+      : "",
+  );
+}
+for (const input of [els.time, els.date])
+  input.addEventListener("input", () => validateDateTime(input));
+
+function setDateTime(epochSeconds) {
+  const p = zonedParts(epochSeconds);
+  els.date.value = isoToDateInput(`${p.year}-${pad(p.month)}-${pad(p.day)}`);
+  els.time.value = `${pad(p.hour)}:${pad(p.minute)}`;
+}
+
+function departureEpoch() {
+  const iso = dateInputToIso(els.date.value);
+  const [year, month, day] = iso.split("-").map(Number);
+  const [hour, minute] = els.time.value.split(":").map(Number);
+  return zonedToEpoch({ year, month, day, hour, minute });
+}
+
+/** Station picker with suggestions, backed by the planner's stop list. */
+function bindStationPicker(input, side) {
+  const menu = el(`${input.id}-menu`);
+  let matches = [];
+  let active = -1;
+  const close = () => {
+    menu.classList.remove("is-open");
+    input.setAttribute("aria-expanded", "false");
+    active = -1;
+  };
+  const choose = (station) => {
+    state[side] = station;
+    input.value = station.name;
+    close();
+  };
+  const render = () => {
+    menu.innerHTML = matches
+      .map(
+        (station, index) =>
+          `<button type="button" class="autocomplete-option${index === active ? " is-active" : ""}" role="option" data-index="${index}">${escapeHtml(station.name)}</button>`,
+      )
+      .join("");
+    menu.classList.toggle("is-open", matches.length > 0);
+    input.setAttribute("aria-expanded", String(matches.length > 0));
+  };
+  input.addEventListener("input", () => {
+    state[side] = null;
+    matches = searchStations(state.stations, input.value);
+    active = matches.length ? 0 : -1;
+    render();
+  });
+  input.addEventListener("keydown", (event) => {
+    if (!matches.length || !menu.classList.contains("is-open")) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      active =
+        (active + (event.key === "ArrowDown" ? 1 : -1) + matches.length) %
+        matches.length;
+      render();
+    } else if (event.key === "Enter" && active >= 0) {
+      event.preventDefault();
+      choose(matches[active]);
+    } else if (event.key === "Escape") close();
+  });
+  // mousedown beats blur, so the click registers before the menu closes.
+  menu.addEventListener("mousedown", (event) => {
+    const option = event.target.closest("[data-index]");
+    if (!option) return;
+    event.preventDefault();
+    choose(matches[Number(option.dataset.index)]);
+  });
+  input.addEventListener("blur", close);
+}
+bindStationPicker(els.from, "from");
+bindStationPicker(els.to, "to");
+
+els.swap.addEventListener("click", () => {
+  [state.from, state.to] = [state.to, state.from];
+  els.from.value = state.from?.name ?? "";
+  els.to.value = state.to?.name ?? "";
+});
+
+const stationFromInput = (input, picked) =>
+  picked ?? searchStations(state.stations, input.value, 1)[0] ?? null;
+
+// ------------------------------------------------------------- measuring
+
+async function measure(task) {
+  const start = performance.now();
+  try {
+    const value = await task();
+    return { ms: performance.now() - start, value };
+  } catch (error) {
+    return { ms: performance.now() - start, error };
+  }
+}
+
+async function callApi(url) {
+  return measure(async () => {
+    const response = await fetch(url);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.error)
+      throw new Error(data.message || `HTTP ${response.status}`);
+    const list = data.connection;
+    return list ? (Array.isArray(list) ? list : [list]) : [];
+  });
+}
+
+const callPlanner = (query) =>
+  measure(() => state.planner.request("plan", query, () => {}));
+
+// ------------------------------------------------------------- rendering
+
+function stopRow(point, showPlatform = true) {
+  return `
+    <div class="planner-row">
+      <span class="planner-time"><b>${formatTime(point.time)}</b></span>
+      <span class="planner-station"><b>${escapeHtml(point.name)}</b></span>
+      <span class="planner-platform">${showPlatform && point.platform ? `<span class="badge">${escapeHtml(point.platform)}</span>` : ""}</span>
+    </div>`;
+}
+
+function legLine(leg) {
+  if (leg.kind === "walk")
+    return `<span class="planner-train">Walk${leg.meters ? ` ${Math.round(leg.meters)} m` : ""}</span>`;
+  return `<span class="planner-train">${escapeHtml(leg.label)}${leg.headsign ? ` → ${escapeHtml(leg.headsign)}` : ""}</span>`;
+}
+
+function timeline(journey) {
+  const parts = [];
+  journey.legs.forEach((leg, index) => {
+    if (index === 0) parts.push(stopRow(leg.from));
+    parts.push(legLine(leg));
+    const next = journey.legs[index + 1];
+    if (next) {
+      parts.push(stopRow(leg.to));
+      const wait = Math.max(0, next.from.time - leg.to.time);
+      parts.push(
+        `<span class="planner-switch">${formatDuration(wait) || "0 min"} transfer</span>`,
+      );
+      parts.push(stopRow(next.from));
+    } else parts.push(stopRow(leg.to));
+  });
+  return parts.join("");
+}
+
+const PILL = {
+  same: "Identical",
+  differs: "Differs",
+  "only-api": "Only iRail",
+  "only-planner": "Only planner",
+  dominated: "Not Pareto-optimal",
+  outside: "Outside iRail's window",
+  window: "Beyond planner's window",
+};
+
+function journeyCard(journey, row, open) {
+  const late = journey.delay > 0 ? Math.round(journey.delay / 60) : 0;
+  return `
+    <article class="result-card is-${row.status}${open ? " is-open" : ""}">
+      <button class="connection-summary" type="button" data-toggle-panel>
+        <span>
+          <span class="connection-times">
+            ${late || journey.canceled ? `<span class="delay-route">!</span>` : ""}
+            <span>${formatTime(journey.departure)}</span><span>-&gt;</span><span>${formatTime(journey.arrival)}</span>
+            ${late ? `<span class="delay">+${late}'</span>` : ""}
+            ${journey.canceled ? `<span class="delay">canceled</span>` : ""}
+          </span>
+          <span class="connection-meta">
+            <span>${formatDuration(journey.arrival - journey.departure)}</span>
+            <span>${transfersLabel(journey.transfers)}</span>
+          </span>
+          ${row.notes.length ? `<span class="card-notes">${escapeHtml(row.notes.join("; "))}</span>` : ""}
+        </span>
+        <span class="summary-right"><span class="pill is-${row.status}">${PILL[row.status]}</span></span>
+      </button>
+      <div class="connection-body"><div class="timeline">${timeline(journey)}</div></div>
+    </article>`;
+}
+
+function column(kind, title, subtitle, side, rows, error) {
+  const cards = rows
+    .filter((row) => row[side])
+    .map((row, index) => journeyCard(row[side], row, index === 0));
+  const body = error
+    ? `<div class="alert alert-danger">${escapeHtml(error.message)}</div>`
+    : cards.length
+      ? `<div class="connections-list">${cards.join("")}</div>`
+      : `<div class="empty-column">No journeys found.</div>`;
+  return `<div class="compare-column is-${kind}"><h2>${title} <small>${subtitle}</small></h2>${body}</div>`;
+}
+
+function journeyCell(journey) {
+  return journey
+    ? `${formatTime(journey.departure)} → ${formatTime(journey.arrival)}<span class="cell-note">${formatDuration(journey.arrival - journey.departure)} · ${transfersLabel(journey.transfers)}</span>`
+    : `<span class="absent">–</span>`;
+}
+
+function verdictHtml(summary, api, planner) {
+  if (api.error || planner.error) {
+    const failed = [api.error && "iRail API", planner.error && "planner"]
+      .filter(Boolean)
+      .join(" and ");
+    return `<section class="compare-section"><div class="compare-panel verdict is-bad"><strong>${failed} failed</strong><span>The other side's results are still shown below.</span></div></section>`;
+  }
+  const { apiCount, plannerCount } = summary;
+  if (!apiCount && !plannerCount)
+    return `<section class="compare-section"><div class="compare-panel verdict is-warn"><strong>Neither found a journey</strong><span>Try another time or date.</span></div></section>`;
+  const agree = summary.sameEarliestArrival;
+  const clean = !summary.differs && !summary.onlyApi && !summary.onlyPlanner;
+  const level = agree && clean ? "" : agree ? "is-warn" : "is-bad";
+  const headline = agree
+    ? `Same earliest arrival: ${formatTime(summary.apiEarliestArrival)}`
+    : `Different earliest arrival: iRail ${summary.apiEarliestArrival ? formatTime(summary.apiEarliestArrival) : "–"}, planner ${summary.plannerEarliestArrival ? formatTime(summary.plannerEarliestArrival) : "–"}`;
+  const details = [
+    `${summary.same} of ${apiCount} iRail journeys found identically`,
+    summary.differs ? `${summary.differs} with another arrival` : "",
+    summary.dominated
+      ? `${summary.dominated} slower ${summary.dominated === 1 ? "one" : "ones"} omitted by the planner`
+      : "",
+    summary.beyondWindow
+      ? `${summary.beyondWindow} beyond the planner's search window`
+      : "",
+    summary.onlyApi ? `${summary.onlyApi} only in iRail` : "",
+    summary.onlyPlanner ? `${summary.onlyPlanner} only in planner` : "",
+    summary.outside
+      ? `${summary.outside} planner ${summary.outside === 1 ? "journey" : "journeys"} outside iRail's window`
+      : "",
+  ].filter(Boolean);
+  return `<section class="compare-section"><div class="compare-panel verdict ${level}"><strong>${headline}</strong><span>${details.join(" · ")}</span></div></section>`;
+}
+
+function barRow(title, subtitle, kind, bars, max) {
+  return `
+    <div class="timing-row is-${kind}">
+      <h3>${title}<small>${subtitle}</small></h3>
+      <div class="timing-bars">${bars
+        .map(
+          ({ label, ms, note }) => `
+        <div class="timing-item">
+          <span class="label">${escapeHtml(label)}${note ? ` · ${escapeHtml(note)}` : ""}</span>
+          <div class="timing-bar">
+            <span class="track"><span class="fill" style="width:${ms === undefined ? 0 : Math.max(0.5, (ms / max) * 100).toFixed(1)}%"></span></span>
+            <span class="value">${formatMs(ms)}</span>
+          </div>
+        </div>`,
+        )
+        .join("")}</div>
+    </div>`;
+}
+
+function timingHtml(t) {
+  const load = (result) => {
+    const d = result?.value?.diagnostics;
+    const ms = (d?.forward?.loadMs ?? 0) + (d?.backward?.loadMs ?? 0);
+    return ms >= 5 ? `${formatMs(ms)} loading timetable pages` : "";
+  };
+  const scanned = t.plan1?.value?.scanned;
+  const values = [t.api1.ms, t.api2?.ms, t.plan1.ms, t.plan2?.ms].filter(
+    (v) => v !== undefined,
+  );
+  const max = Math.max(...values, 1);
+  const rows = [
+    barRow(
+      "iRail API",
+      "api.irail.be · realtime",
+      "api",
+      [
+        {
+          label: "first request",
+          ms: t.api1.error ? undefined : t.api1.ms,
+          note: t.api1.error ? "failed" : `${t.api1.value.length} results`,
+        },
+        {
+          label: "same request again",
+          ms: t.api2 && !t.api2.error ? t.api2.ms : undefined,
+        },
+      ],
+      max,
+    ),
+    barRow(
+      "Planner",
+      "in your browser · scheduled",
+      "planner",
+      [
+        {
+          label: "first search",
+          ms: t.plan1.error ? undefined : t.plan1.ms,
+          note: t.plan1.error
+            ? "failed"
+            : [scanned ? `${scanned.toLocaleString()} connections scanned` : "", load(t.plan1)]
+                .filter(Boolean)
+                .join(", "),
+        },
+        {
+          label: "same search again (timetable pages cached)",
+          ms: t.plan2 && !t.plan2.error ? t.plan2.ms : undefined,
+        },
+      ],
+      max,
+    ),
+  ];
+  const notes = [];
+  const apiRepeat = t.api2 && !t.api2.error ? t.api2.ms : undefined;
+  const planRepeat = t.plan2 && !t.plan2.error ? t.plan2.ms : undefined;
+  if (apiRepeat !== undefined && planRepeat !== undefined) {
+    const ratio = apiRepeat / planRepeat;
+    notes.push(
+      ratio >= 1
+        ? `Repeated, the planner answered ${ratio.toFixed(1)}× faster than the API.`
+        : `Repeated, the API answered ${(1 / ratio).toFixed(1)}× faster than the planner.`,
+    );
+  }
+  if (t.api1.ms !== undefined && t.plan1.ms !== undefined && !t.api1.error && !t.plan1.error)
+    notes.push(
+      t.plan1.ms <= t.api1.ms
+        ? `First requests: the planner was ${(t.api1.ms / t.plan1.ms).toFixed(1)}× faster.`
+        : `First requests: the API was ${(t.plan1.ms / t.api1.ms).toFixed(1)}× faster, because the planner first had to download timetable pages.`,
+    );
+  notes.push(
+    `Planner start-up took ${formatMs(state.initMs)} once per page load (manifest, stations, routes and trips).`,
+  );
+  const apis = state.history.map((h) => h.api).filter((v) => v !== undefined);
+  const plans = state.history.map((h) => h.planner).filter((v) => v !== undefined);
+  if (state.history.length > 1 && apis.length && plans.length)
+    notes.push(
+      `Median over ${state.history.length} searches in this session (repeat requests): API ${formatMs(median(apis))}, planner ${formatMs(median(plans))}.`,
+    );
+  notes.push(
+    "Network speed, your device and server load change these numbers; treat them as one sample.",
+  );
+  return `
+    <section class="compare-section">
+      <h2>Speed</h2>
+      <div class="compare-panel">
+        <div class="timing-rows">${rows.join("")}</div>
+        <div class="timing-notes">${notes.map((n) => `<p>${escapeHtml(n)}</p>`).join("")}</div>
+      </div>
+    </section>`;
+}
+
+function tableHtml(rows) {
+  if (!rows.length) return "";
+  return `
+    <section class="compare-section">
+      <h2>Journeys</h2>
+      <div class="compare-panel table-scroll">
+        <table class="diff-table">
+          <thead><tr><th>iRail API</th><th>Planner</th><th>Result</th></tr></thead>
+          <tbody>${rows
+            .map(
+              (row) => `
+            <tr>
+              <td class="times">${journeyCell(row.api)}</td>
+              <td class="times">${journeyCell(row.planner)}</td>
+              <td><span class="pill is-${row.status}">${PILL[row.status]}</span>${row.notes.map((n) => `<span class="cell-note">${escapeHtml(n)}</span>`).join("")}</td>
+            </tr>`,
+            )
+            .join("")}</tbody>
+        </table>
+      </div>
+    </section>`;
+}
+
+function render(run) {
+  const { api, planner, comparison, timings } = run;
+  const rows = comparison.rows;
+  els.results.innerHTML = [
+    verdictHtml(comparison.summary, api, planner),
+    timingHtml(timings),
+    tableHtml(rows),
+    `<section class="compare-section"><div class="compare-columns">${column("api", "iRail API", "realtime", "api", rows, api.error)}${column("planner", "Planner", "scheduled", "planner", rows, planner.error)}</div></section>`,
+  ].join("");
+}
+
+els.results.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-toggle-panel]");
+  if (button) button.closest(".result-card").classList.toggle("is-open");
+});
+
+// ---------------------------------------------------------------- search
+
+function showAlert(type, message) {
+  els.alert.innerHTML = `<div class="alert alert-${type}">${escapeHtml(message)}</div>`;
+}
+
+function updateUrl(from, to, epoch) {
+  const p = new URLSearchParams(location.search);
+  const parts = zonedParts(epoch);
+  p.set("from", from.key);
+  p.set("to", to.key);
+  p.set("date", `${parts.year}-${pad(parts.month)}-${pad(parts.day)}`);
+  p.set("time", `${pad(parts.hour)}:${pad(parts.minute)}`);
+  try {
+    history.replaceState(null, "", `?${p}`);
+  } catch {
+    // The address bar is a convenience only.
+  }
+}
+
+async function search() {
+  if (state.running || !state.planner) return;
+  els.alert.innerHTML = "";
+  for (const input of [els.time, els.date]) validateDateTime(input);
+  if (!els.form.reportValidity()) return;
+  const from = stationFromInput(els.from, state.from);
+  const to = stationFromInput(els.to, state.to);
+  if (!from || !to) {
+    showAlert(
+      "danger",
+      "We could not translate your text to a station. Pick a suggested station and try again.",
+    );
+    return;
+  }
+  if (from.key === to.key) {
+    showAlert("info", "The departure and destination station are the same.");
+    return;
+  }
+  Object.assign(state, { from, to });
+  els.from.value = from.name;
+  els.to.value = to.name;
+  const departureAfter = departureEpoch();
+  const maxWalkMeters = Math.min(
+    5000,
+    Math.max(0, Math.round(Number(els.walk.value) || 0)),
+  );
+  updateUrl(from, to, departureAfter);
+
+  state.running = true;
+  els.search.disabled = true;
+  els.results.innerHTML = `<div class="compare-panel loading-inline"><div class="loader">Loading...</div><span id="run-step">Asking api.irail.be…</span></div>`;
+  const step = (text) => {
+    const target = el("run-step");
+    if (target) target.textContent = text;
+  };
+  try {
+    const apiUrl = apiConnectionsUrl({
+      fromKey: from.key,
+      toKey: to.key,
+      departureAfter,
+    });
+    const query = {
+      origin: { sourceId: state.source.id, stopIdx: from.stopIdx },
+      destination: { sourceId: state.source.id, stopIdx: to.stopIdx },
+      departureAfter,
+      maxWalkMeters,
+      windowMode: els.window.value,
+      sourceIds: [state.source.id],
+    };
+    // Sequential on purpose: concurrent runs would distort each other's timing.
+    const api1 = await callApi(apiUrl);
+    step("Planning with the planner library…");
+    const plan1 = await callPlanner(query);
+
+    const names = state.source.stops.name;
+    const ids = state.source.stops.id;
+    const apiJourneys = api1.error
+      ? []
+      : api1.value.map(normalizeApiConnection);
+    const plannerJourneys = plan1.error
+      ? []
+      : plan1.value.options.map((option) =>
+          normalizePlannerJourney(option, { names, ids }),
+        );
+    const run = {
+      api: api1,
+      planner: plan1,
+      comparison: compareJourneys(apiJourneys, plannerJourneys, {
+        plannerWindow: plan1.error ? undefined : plan1.value.window,
+      }),
+      timings: { api1, plan1 },
+    };
+    render(run);
+
+    // Repeat both so each side is also measured warm (connection reuse for the
+    // API, cached timetable pages for the planner).
+    const api2 = await callApi(apiUrl);
+    const plan2 = await callPlanner(query);
+    run.timings = { api1, plan1, api2, plan2 };
+    state.history.push({
+      api: api2.error ? undefined : api2.ms,
+      planner: plan2.error ? undefined : plan2.ms,
+    });
+    render(run);
+  } catch (error) {
+    console.error(error);
+    els.results.innerHTML = "";
+    showAlert("danger", error.message || "Request failed");
+  } finally {
+    state.running = false;
+    els.search.disabled = false;
+  }
+}
+
+els.form.addEventListener("submit", (event) => {
+  event.preventDefault();
+  search();
+});
+
+// ------------------------------------------------------------------ init
+
+function clampToCoverage(now) {
+  const { start, end } = state.coverage;
+  if (now < start) return start;
+  if (now > end) return Math.max(start, end - 24 * 3600);
+  return now;
+}
+
+async function init() {
+  setDateTime(Math.floor(Date.now() / 1000));
+  try {
+    const url = resolveDataUrl(dataUrl, location.href, document.baseURI);
+    el("data-source").innerHTML = `Planner data: <a href="${escapeHtml(url)}">${escapeHtml(url)}</a>`;
+    state.planner = new PlannerClient(createPlannerWorker());
+    const started = performance.now();
+    const [source] = await state.planner.request("init", { dataUrl: url });
+    state.initMs = performance.now() - started;
+    if (!source) throw new Error("no source could be loaded");
+    state.source = source;
+    state.stations = buildStations({
+      ids: source.stops.id,
+      names: source.stops.name,
+      searchable: source.stopFamily.searchable,
+    });
+    if (!state.stations.length)
+      throw new Error(
+        "this timetable has no NMBS/SNCB stations, which the iRail API needs. Use the iRail CDN data",
+      );
+    state.coverage = {
+      start: Date.parse(source.manifest.coverageStart) / 1000,
+      end: Date.parse(source.manifest.coverageEnd) / 1000,
+    };
+
+    const params = new URLSearchParams(location.search);
+    const byKey = (key) => state.stations.find((s) => s.key === key);
+    const fromParam = byKey(stationKey(`/stops/${params.get("from")}`) ?? "");
+    const toParam = byKey(stationKey(`/stops/${params.get("to")}`) ?? "");
+    const date = dateInputToIso(isoToDateInput(params.get("date") ?? ""));
+    const time = isValidTimeInput(params.get("time") ?? "") ? params.get("time") : "";
+    if (date && time) {
+      els.date.value = isoToDateInput(date);
+      els.time.value = time;
+    } else setDateTime(clampToCoverage(Math.floor(Date.now() / 1000)));
+    // Gent-Sint-Pieters → Liège-Guillemins unless the address says otherwise.
+    state.from = fromParam ?? byKey("8892007") ?? null;
+    state.to = toParam ?? byKey("8841004") ?? null;
+    els.from.value = state.from?.name ?? "";
+    els.to.value = state.to?.name ?? "";
+    for (const input of [els.from, els.to, els.search]) input.disabled = false;
+
+    els.status.textContent = `Planner ready: ${state.stations.length.toLocaleString()} stations loaded in ${formatMs(state.initMs)}.`;
+    if (fromParam && toParam) search();
+  } catch (error) {
+    console.error(error);
+    els.status.className = "alert alert-danger";
+    els.status.textContent = `Could not load the planner's timetable: ${error.message}`;
+  }
+}
+
+init();

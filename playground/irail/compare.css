@@ -1,0 +1,321 @@
+/* Additions to the irail.be stylesheet for the API vs. planner comparison. */
+:root {
+  --good: #1f7a4d;
+  --good-soft: #eaf7f0;
+  --warn: #9a5b00;
+  --warn-soft: #fff6e5;
+  --api: #c72929;
+  --planner: #2457b5;
+}
+
+.nav-link-button {
+  display: inline-block;
+}
+
+.form-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: .85rem;
+}
+
+.compare-section {
+  margin-top: 1.25rem;
+}
+
+.compare-section > h2,
+.compare-column > h2 {
+  margin: 0 0 .6rem;
+  font-size: 1.15rem;
+  letter-spacing: -.01em;
+}
+
+.compare-panel {
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, .94);
+  box-shadow: var(--shadow);
+}
+
+/* Verdict */
+.verdict {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: .4rem 1rem;
+  border-left: 5px solid var(--good);
+}
+
+.verdict.is-warn {
+  border-left-color: var(--warn);
+}
+
+.verdict.is-bad {
+  border-left-color: var(--accent);
+}
+
+.verdict strong {
+  font-size: 1.15rem;
+}
+
+.verdict span {
+  color: var(--muted);
+}
+
+/* Timing */
+.timing-rows {
+  display: grid;
+  gap: .9rem;
+}
+
+.timing-row {
+  display: grid;
+  grid-template-columns: 9.5rem minmax(0, 1fr);
+  gap: .25rem .9rem;
+  align-items: center;
+}
+
+.timing-row h3 {
+  margin: 0;
+  font-size: .95rem;
+}
+
+.timing-row h3 small {
+  display: block;
+  color: var(--muted);
+  font-size: .8rem;
+  font-weight: 400;
+}
+
+.timing-bars {
+  display: grid;
+  gap: .55rem;
+}
+
+.timing-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 5.5rem;
+  gap: .6rem;
+  align-items: center;
+  font-size: .85rem;
+}
+
+.timing-bar .track {
+  height: .85rem;
+  border-radius: 999px;
+  background: var(--line-soft);
+  overflow: hidden;
+}
+
+.timing-bar .fill {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-radius: 999px;
+  background: var(--api);
+}
+
+.timing-row.is-planner .fill {
+  background: var(--planner);
+}
+
+.timing-bar .value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  text-align: right;
+}
+
+.timing-item .label {
+  display: block;
+  margin-bottom: .1rem;
+  color: var(--muted);
+  font-size: .8rem;
+}
+
+.timing-notes {
+  margin: .9rem 0 0;
+  color: var(--muted);
+  font-size: .85rem;
+}
+
+.timing-notes p {
+  margin: .25rem 0 0;
+}
+
+/* Journey table */
+.table-scroll {
+  overflow-x: auto;
+}
+
+.diff-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .92rem;
+}
+
+.diff-table th,
+.diff-table td {
+  padding: .6rem .55rem;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: left;
+  vertical-align: top;
+}
+
+.diff-table th {
+  color: var(--muted);
+  font-size: .78rem;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+}
+
+.diff-table td.times {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.diff-table .absent {
+  color: var(--muted);
+}
+
+.diff-table .cell-note {
+  display: block;
+  color: var(--muted);
+  font-size: .8rem;
+}
+
+.pill {
+  display: inline-block;
+  padding: .1rem .55rem;
+  border-radius: 999px;
+  background: var(--line-soft);
+  color: var(--text);
+  font-size: .78rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.pill.is-same {
+  background: var(--good-soft);
+  color: var(--good);
+}
+
+.pill.is-differs,
+.pill.is-only-api,
+.pill.is-only-planner {
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+}
+
+.pill.is-dominated,
+.pill.is-outside,
+.pill.is-window {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+/* Side-by-side results */
+.compare-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+
+.compare-column .connections-list {
+  gap: .6rem;
+}
+
+.compare-column > h2 small {
+  color: var(--muted);
+  font-size: .8rem;
+  font-weight: 400;
+}
+
+.compare-column.is-api > h2 {
+  color: var(--api);
+}
+
+.compare-column.is-planner > h2 {
+  color: var(--planner);
+}
+
+.result-card.is-same {
+  border-left: 4px solid var(--good);
+}
+
+.result-card.is-differs,
+.result-card.is-only-api,
+.result-card.is-only-planner {
+  border-left: 4px solid var(--accent);
+}
+
+.result-card.is-dominated,
+.result-card.is-outside,
+.result-card.is-window {
+  border-left: 4px solid #e0a43a;
+}
+
+.card-notes {
+  display: block;
+  margin-top: .15rem;
+  color: var(--muted);
+  font-size: .82rem;
+}
+
+.empty-column {
+  padding: 1rem;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  color: var(--muted);
+}
+
+.loading-inline {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  margin-top: 1.25rem;
+  padding: 1rem;
+  color: var(--muted);
+}
+
+.loading-inline .loader {
+  width: 24px;
+  height: 24px;
+  margin: 0;
+  border-width: 3px;
+}
+
+@media (max-width: 860px) {
+  .compare-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .timing-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 560px) {
+  .diff-table {
+    font-size: .85rem;
+  }
+
+  .diff-table td.times {
+    white-space: normal;
+  }
+
+  .diff-table th,
+  .diff-table td {
+    padding: .5rem .3rem;
+  }
+
+  .site-header {
+    flex-wrap: wrap;
+  }
+
+  .view-nav {
+    justify-content: flex-start;
+    flex-basis: 100%;
+    order: 3;
+  }
+}

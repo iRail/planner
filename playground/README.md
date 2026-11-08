@@ -33,5 +33,28 @@ building. For GitHub Actions, the optional `PLANNER_DATA_URL` repository variabl
 sets the build default. An empty value uses the iRail CDN default. Publishers must
 enable CORS for browser access.
 
+## iRail API comparison
+
+`irail.html` is a second page, built from the same sources, that looks like
+[irail.be](https://github.com/iRail/irail.be). Each search runs against
+`https://api.irail.be/v1/connections` and against the planner library (in a
+worker, on the iRail CDN data), then shows:
+
+- a verdict (same earliest arrival?) and a per-journey diff with a reason for every
+  difference;
+- timings for both sides: first request, a repeat of the same request, and the
+  planner's one-off start-up. Requests run one after the other so they do not
+  distort each other;
+- both result lists side by side in irail.be's card style.
+
+The API reports realtime delays and cancellations, the planner uses the scheduled
+timetable; the API lists the next departures including slower ones, the planner
+lists Pareto-optimal alternatives within its search window. Journeys match when
+their scheduled departure and arrival instants are equal. The logic is in
+`compare.mjs` and covered by `test/compare.test.mjs`. It needs the iRail CDN data
+and CORS access to `api.irail.be`. `irail/irail-be.css`, `irail/logo.svg` and
+`irail/date-time.mjs` are copied from the irail.be repository; `irail/compare.css`
+adds the comparison styles.
+
 The quick start, API reference and format notes in `index.html` are the hosted
 library documentation. Keep these and the repository README consistent.
