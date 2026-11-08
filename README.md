@@ -252,7 +252,12 @@ design, arrivals beyond the planner's adaptive window) and timings: first reques
 and repeat for both, plus the planner's one-off start-up. API results include
 realtime delays and cancellations, planner results are scheduled only, so
 differences are expected and each carries a reason. Stations are matched through
-their NMBS station number. The page needs the iRail CDN data and CORS access to
+their NMBS station number. The station search works like irail.be's: it finds
+stations by their name in any language (nl, fr, de, en), shows the label in the
+language chosen in the header, and ranks exact, word-prefix, prefix and partial
+matches, busiest (`avgStopTimes`) first. The translations come from the CDN's
+`stations.arrow` (an iRail extension linked from `irail:extensions` in the
+manifest, not part of LC 2-alpha); without it the timetable's own names are used. The page needs the iRail CDN data and CORS access to
 `api.irail.be`; the bundled sample timetable has no matching stations.
 
 [`.github/workflows/pages.yml`](.github/workflows/pages.yml) tests on Node 22 and 24,

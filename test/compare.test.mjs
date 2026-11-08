@@ -3,12 +3,10 @@ import test from "node:test";
 import {
   apiConnectionsUrl,
   apiStationId,
-  buildStations,
   compareJourneys,
   median,
   normalizeApiConnection,
   normalizePlannerJourney,
-  searchStations,
   stationKey,
   zonedParts,
   zonedToEpoch,
@@ -69,6 +67,18 @@ test("API URL uses Belgian local date and time", () => {
   assert.equal(url.searchParams.get("date"), "081126");
   assert.equal(url.searchParams.get("time"), "0905");
   assert.equal(url.searchParams.get("timesel"), "departure");
+  assert.equal(url.searchParams.get("lang"), "en");
+  assert.equal(
+    new URL(
+      apiConnectionsUrl({
+        fromKey: "1",
+        toKey: "2",
+        departureAfter: 0,
+        language: "nl",
+      }),
+    ).searchParams.get("lang"),
+    "nl",
+  );
 });
 
 const apiStop = (id, name, time, extra = {}) => ({
@@ -292,37 +302,4 @@ test("median handles odd, even and empty lists", () => {
   assert.equal(median([3, 1, 2]), 2);
   assert.equal(median([4, 1, 2, 3]), 2.5);
   assert.equal(median([]), undefined);
-});
-
-test("station search merges platforms, ignores diacritics and matches any label", () => {
-  const ids = [
-    "https://irail.be/id/be.sncb/stops/S8841004",
-    "https://irail.be/id/be.sncb/stops/8841004_1",
-    "https://irail.be/id/be.sncb/stops/8841004_2",
-    "https://irail.be/id/be.sncb/stops/S8892007",
-    "https://irail.be/id/be.sncb/stops/8892007_1",
-    "https://irail.be/id/be.sncb/stops/S8892106",
-  ];
-  const names = [
-    "Liège-Guillemins",
-    "Luik-Guillemins",
-    "Liège-Guillemins",
-    "Gent-Sint-Pieters",
-    "Gent-Sint-Pieters",
-    "Gentbrugge",
-  ];
-  const stations = buildStations({ ids, names, searchable: [0, 3, 5] });
-  assert.equal(stations.length, 3);
-  assert.equal(searchStations(stations, "liege")[0].key, "8841004");
-  assert.equal(searchStations(stations, "LUIK guil")[0].key, "8841004");
-  assert.equal(searchStations(stations, "gent")[0].key, "8892007");
-  assert.deepEqual(
-    searchStations(stations, "gent").map((s) => s.name),
-    ["Gent-Sint-Pieters", "Gentbrugge"],
-  );
-  assert.deepEqual(searchStations(stations, "sint pieters").map((s) => s.name), [
-    "Gent-Sint-Pieters",
-  ]);
-  assert.deepEqual(searchStations(stations, ""), []);
-  assert.equal(stations[0].stopIdx, 0);
 });

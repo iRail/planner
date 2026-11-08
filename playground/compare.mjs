@@ -66,7 +66,13 @@ export function zonedToEpoch(
 const pad = (n, width = 2) => String(n).padStart(width, "0");
 
 /** Query string for the API's connections endpoint (Belgian local date and time). */
-export function apiConnectionsUrl({ fromKey, toKey, departureAfter, results = 6 }) {
+export function apiConnectionsUrl({
+  fromKey,
+  toKey,
+  departureAfter,
+  results = 6,
+  language = "en",
+}) {
   const p = zonedParts(departureAfter);
   const params = new URLSearchParams({
     from: apiStationId(fromKey),
@@ -76,7 +82,7 @@ export function apiConnectionsUrl({ fromKey, toKey, departureAfter, results = 6 
     timesel: "departure",
     results: String(results),
     format: "json",
-    lang: "en",
+    lang: language,
     typeOfTransport: "automatic",
   });
   return `${API_BASE}/connections?${params}`;
@@ -326,79 +332,4 @@ export function median(values) {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = sorted.length >> 1;
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-}
-
-/**
- * Station search over `{ key, name, names, weight }` records. Matching ignores
- * case, diacritics and hyphens; results are ranked exact > prefix > word
- * prefix > contains, then by weight (busier stations first).
- */
-export const normalizeText = (value) =>
-  String(value || "")
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "")
-    .toLowerCase()
-    .replace(/[-_/,.()']+/gu, " ")
-    .replace(/\s+/gu, " ")
-    .trim();
-
-export function searchStations(stations, query, limit = 8) {
-  const q = normalizeText(query);
-  if (!q) return [];
-  const ranked = [];
-  for (const station of stations) {
-    let best = Infinity;
-    for (const name of station.searchNames) {
-      const rank =
-        name === q
-          ? 0
-          : name.startsWith(q)
-            ? 1
-            : name.includes(` ${q}`)
-              ? 2
-              : name.includes(q)
-                ? 3
-                : Infinity;
-      if (rank < best) best = rank;
-    }
-    if (best < Infinity) ranked.push({ station, rank: best });
-  }
-  ranked.sort(
-    (a, b) =>
-      a.rank - b.rank ||
-      b.station.weight - a.station.weight ||
-      a.station.name.localeCompare(b.station.name),
-  );
-  return ranked.slice(0, limit).map((r) => r.station);
-}
-
-/**
- * One searchable record per station from the planner's init response: every
- * stop sharing a station number contributes its label (so labels in any
- * language are searchable), and busier stations (more platforms) rank first.
- */
-export function buildStations({ ids, names, searchable }) {
-  const byKey = new Map();
-  for (let idx = 0; idx < ids.length; idx += 1) {
-    const key = stationKey(ids[idx]);
-    if (key === null) continue;
-    let station = byKey.get(key);
-    if (!station) {
-      station = { key, name: "", stopIdx: undefined, names: new Set(), weight: 0 };
-      byKey.set(key, station);
-    }
-    station.weight += 1;
-    if (names[idx]) station.names.add(names[idx]);
-  }
-  const stations = [];
-  for (const idx of searchable) {
-    const station = byKey.get(stationKey(ids[idx]));
-    if (!station || station.stopIdx !== undefined) continue;
-    station.stopIdx = idx;
-    station.name = names[idx] || ids[idx];
-    station.names.add(station.name);
-    station.searchNames = [...station.names].map(normalizeText);
-    stations.push(station);
-  }
-  return stations;
 }

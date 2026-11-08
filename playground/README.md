@@ -51,7 +51,15 @@ The API reports realtime delays and cancellations, the planner uses the schedule
 timetable; the API lists the next departures including slower ones, the planner
 lists Pareto-optimal alternatives within its search window. Journeys match when
 their scheduled departure and arrival instants are equal. The logic is in
-`compare.mjs` and covered by `test/compare.test.mjs`. It needs the iRail CDN data
+`compare.mjs` and covered by `test/compare.test.mjs`.
+
+Station names come from the iRail CDN's `stations.arrow` extension (columns
+`name`, `alternativeFr/Nl/De/En`, `avgStopTimes`, `iri`; found through the
+manifest's `irail:extensions` link and `irail.json`), because the LC `stops.arrow`
+has a single label per stop. `irail/stations.mjs` ports irail.be's station search:
+text in any language matches, the language picker chooses the displayed label,
+and results rank exact > word prefix > prefix > partial, then by `avgStopTimes`
+descending. Covered by `test/stations.test.mjs`. It needs the iRail CDN data
 and CORS access to `api.irail.be`. `irail/irail-be.css`, `irail/logo.svg` and
 `irail/date-time.mjs` are copied from the irail.be repository; `irail/compare.css`
 adds the comparison styles.

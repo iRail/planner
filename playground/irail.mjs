@@ -3,16 +3,21 @@ import { PlannerClient, createPlannerWorker } from "../src/browser.mjs";
 import { dataUrl } from "./config.mjs";
 import {
   apiConnectionsUrl,
-  buildStations,
   compareJourneys,
   median,
   normalizeApiConnection,
   normalizePlannerJourney,
-  searchStations,
   stationKey,
   zonedParts,
   zonedToEpoch,
 } from "./compare.mjs";
+import {
+  buildStations,
+  findStations,
+  loadStationRows,
+  normalizeLanguage,
+  stationLabel,
+} from "./irail/stations.mjs";
 import {
   dateInputToIso,
   isoToDateInput,
@@ -30,6 +35,7 @@ const els = {
   window: el("route-window"),
   search: el("route-search"),
   swap: el("route-swap"),
+  language: el("language-select"),
   status: el("planner-status"),
   alert: el("route-alert"),
   results: el("route-results"),
@@ -39,6 +45,9 @@ const state = {
   planner: null,
   source: null,
   stations: [],
+  byKey: new Map(),
+  language: "en",
+  lastRun: null,
   from: null,
   to: null,
   initMs: 0,
@@ -123,32 +132,38 @@ function bindStationPicker(input, side) {
   };
   const choose = (station) => {
     state[side] = station;
-    input.value = station.name;
+    input.value = stationLabel(station, state.language);
     close();
   };
   const render = () => {
     menu.innerHTML = matches
       .map(
         (station, index) =>
-          `<button type="button" class="autocomplete-option${index === active ? " is-active" : ""}" role="option" data-index="${index}">${escapeHtml(station.name)}</button>`,
+          `<button type="button" class="autocomplete-option${index === active ? " is-active" : ""}" role="option" data-index="${index}">${escapeHtml(stationLabel(station, state.language))}</button>`,
       )
       .join("");
     menu.classList.toggle("is-open", matches.length > 0);
     input.setAttribute("aria-expanded", String(matches.length > 0));
   };
+  const suggest = () => {
+    matches = findStations(state.stations, input.value);
+    active = -1;
+    render();
+  };
   input.addEventListener("input", () => {
     state[side] = null;
-    matches = searchStations(state.stations, input.value);
-    active = matches.length ? 0 : -1;
-    render();
+    suggest();
   });
+  input.addEventListener("focus", suggest);
   input.addEventListener("keydown", (event) => {
     if (!matches.length || !menu.classList.contains("is-open")) return;
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    if (event.key === "ArrowDown") {
       event.preventDefault();
-      active =
-        (active + (event.key === "ArrowDown" ? 1 : -1) + matches.length) %
-        matches.length;
+      active = Math.min(active + 1, matches.length - 1);
+      render();
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      active = Math.max(active - 1, 0);
       render();
     } else if (event.key === "Enter" && active >= 0) {
       event.preventDefault();
@@ -167,14 +182,53 @@ function bindStationPicker(input, side) {
 bindStationPicker(els.from, "from");
 bindStationPicker(els.to, "to");
 
+function showStationNames() {
+  els.from.value = state.from ? stationLabel(state.from, state.language) : "";
+  els.to.value = state.to ? stationLabel(state.to, state.language) : "";
+}
+
 els.swap.addEventListener("click", () => {
   [state.from, state.to] = [state.to, state.from];
-  els.from.value = state.from?.name ?? "";
-  els.to.value = state.to?.name ?? "";
+  showStationNames();
 });
 
 const stationFromInput = (input, picked) =>
-  picked ?? searchStations(state.stations, input.value, 1)[0] ?? null;
+  picked ?? findStations(state.stations, input.value, 1)[0] ?? null;
+
+// Like irail.be: the language picks which label is shown, the search covers all.
+function readStoredLanguage() {
+  try {
+    return normalizeLanguage(localStorage.getItem("irail-compare-language"));
+  } catch {
+    return "";
+  }
+}
+function initialLanguage() {
+  return (
+    readStoredLanguage() ||
+    (navigator.languages?.length ? navigator.languages : [navigator.language])
+      .map(normalizeLanguage)
+      .find(Boolean) ||
+    "en"
+  );
+}
+state.language = initialLanguage();
+els.language.value = state.language;
+document.documentElement.lang = state.language;
+els.language.addEventListener("change", () => {
+  state.language = normalizeLanguage(els.language.value) || "en";
+  document.documentElement.lang = state.language;
+  try {
+    localStorage.setItem("irail-compare-language", state.language);
+  } catch {
+    // Remembering the language is a convenience only.
+  }
+  showStationNames();
+  if (state.lastRun) {
+    analyse(state.lastRun);
+    render(state.lastRun);
+  }
+});
 
 // ------------------------------------------------------------- measuring
 
@@ -455,6 +509,21 @@ function tableHtml(rows) {
     </section>`;
 }
 
+// Station names shown for a journey come from the station table, in the chosen
+// language (the two sources spell and translate stations differently), then the
+// two result sets are diffed.
+function analyse(run) {
+  for (const journey of [...run.apiJourneys, ...run.plannerJourneys])
+    for (const leg of journey.legs)
+      for (const point of [leg.from, leg.to]) {
+        const station = state.byKey.get(point.key);
+        if (station) point.name = stationLabel(station, state.language);
+      }
+  run.comparison = compareJourneys(run.apiJourneys, run.plannerJourneys, {
+    plannerWindow: run.planner.error ? undefined : run.planner.value.window,
+  });
+}
+
 function render(run) {
   const { api, planner, comparison, timings } = run;
   const rows = comparison.rows;
@@ -510,8 +579,7 @@ async function search() {
     return;
   }
   Object.assign(state, { from, to });
-  els.from.value = from.name;
-  els.to.value = to.name;
+  showStationNames();
   const departureAfter = departureEpoch();
   const maxWalkMeters = Math.min(
     5000,
@@ -531,6 +599,7 @@ async function search() {
       fromKey: from.key,
       toKey: to.key,
       departureAfter,
+      language: state.language,
     });
     const query = {
       origin: { sourceId: state.source.id, stopIdx: from.stopIdx },
@@ -558,11 +627,12 @@ async function search() {
     const run = {
       api: api1,
       planner: plan1,
-      comparison: compareJourneys(apiJourneys, plannerJourneys, {
-        plannerWindow: plan1.error ? undefined : plan1.value.window,
-      }),
+      apiJourneys,
+      plannerJourneys,
       timings: { api1, plan1 },
     };
+    analyse(run);
+    state.lastRun = run;
     render(run);
 
     // Repeat both so each side is also measured warm (connection reuse for the
@@ -606,15 +676,23 @@ async function init() {
     el("data-source").innerHTML = `Planner data: <a href="${escapeHtml(url)}">${escapeHtml(url)}</a>`;
     state.planner = new PlannerClient(createPlannerWorker());
     const started = performance.now();
+    // The station table (translations, traffic) loads next to the timetable.
+    const stationRows = loadStationRows(url).catch((error) => {
+      console.warn("Station translations unavailable:", error);
+      return null;
+    });
     const [source] = await state.planner.request("init", { dataUrl: url });
     state.initMs = performance.now() - started;
     if (!source) throw new Error("no source could be loaded");
     state.source = source;
+    const rows = await stationRows;
     state.stations = buildStations({
+      rows: rows ?? [],
       ids: source.stops.id,
       names: source.stops.name,
       searchable: source.stopFamily.searchable,
     });
+    state.byKey = new Map(state.stations.map((s) => [s.key, s]));
     if (!state.stations.length)
       throw new Error(
         "this timetable has no NMBS/SNCB stations, which the iRail API needs. Use the iRail CDN data",
@@ -625,7 +703,7 @@ async function init() {
     };
 
     const params = new URLSearchParams(location.search);
-    const byKey = (key) => state.stations.find((s) => s.key === key);
+    const byKey = (key) => state.byKey.get(key);
     const fromParam = byKey(stationKey(`/stops/${params.get("from")}`) ?? "");
     const toParam = byKey(stationKey(`/stops/${params.get("to")}`) ?? "");
     const date = dateInputToIso(isoToDateInput(params.get("date") ?? ""));
@@ -637,11 +715,10 @@ async function init() {
     // Gent-Sint-Pieters → Liège-Guillemins unless the address says otherwise.
     state.from = fromParam ?? byKey("8892007") ?? null;
     state.to = toParam ?? byKey("8841004") ?? null;
-    els.from.value = state.from?.name ?? "";
-    els.to.value = state.to?.name ?? "";
+    showStationNames();
     for (const input of [els.from, els.to, els.search]) input.disabled = false;
 
-    els.status.textContent = `Planner ready: ${state.stations.length.toLocaleString()} stations loaded in ${formatMs(state.initMs)}.`;
+    els.status.textContent = `Planner ready: ${state.stations.length.toLocaleString()} stations loaded in ${formatMs(state.initMs)}${rows ? "" : "; station translations unavailable, showing the timetable's own names"}.`;
     if (fromParam && toParam) search();
   } catch (error) {
     console.error(error);
