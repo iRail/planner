@@ -3,6 +3,7 @@
 // answered by the planner's iRail-style calls, so they show the same delays,
 // platforms and cancellations as the journeys.
 
+import "./trains.css";
 import { stationKey } from "../src/irail-stations.mjs";
 
 const escapeHtml = (value) =>
@@ -49,20 +50,18 @@ export function stationRefOf(stopIri, name) {
   return { id: key ? `BE.NMBS.${key.padStart(9, "0")}` : name, name };
 }
 
-/** The service day of a leg (YYYYMMDD) as an instant on that Belgian day. */
-export function serviceDayInstant(serviceDate) {
-  if (!serviceDate) return undefined;
-  const year = Math.floor(serviceDate / 10000);
-  const month = Math.floor(serviceDate / 100) % 100;
-  return new Date(Date.UTC(year, month - 1, serviceDate % 100, 12));
-}
+export { serviceDayInstant } from "./service-day.mjs";
 
 /**
- * `request` is `(type, payload) => Promise` of the planner (worker client).
+ * `request` is `(type, payload) => Promise` of the planner (worker client);
+ * `language` optionally returns `nl`, `fr`, `en` or `de` for station names.
  * Returns the buttons to put in a journey and `refresh()` for when the
  * real-time feed changed.
  */
-export function createTrainViews({ request }) {
+export function createTrainViews({ request: ask, language }) {
+  // `language` (a function) picks the language of the station names.
+  const request = (type, payload) =>
+    ask(type, language ? { ...payload, language: language() } : payload);
   const openTrips = new Set(); // keys of trip panels the reader opened
   const livePanels = new Set(); // panels on screen, to refresh them
 

@@ -6,6 +6,7 @@
   --warn-soft: #fff6e5;
   --api: #c72929;
   --planner: #2457b5;
+  --train-accent: #2457b5; /* trains and stations you can click (trains.css) */
 }
 
 .nav-link-button {
@@ -143,46 +144,6 @@
 }
 
 /* Journey table */
-.table-scroll {
-  overflow-x: auto;
-}
-
-.diff-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: .92rem;
-}
-
-.diff-table th,
-.diff-table td {
-  padding: .6rem .55rem;
-  border-bottom: 1px solid var(--line-soft);
-  text-align: left;
-  vertical-align: top;
-}
-
-.diff-table th {
-  color: var(--muted);
-  font-size: .78rem;
-  letter-spacing: .03em;
-  text-transform: uppercase;
-}
-
-.diff-table td.times {
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.diff-table .absent {
-  color: var(--muted);
-}
-
-.diff-table .cell-note {
-  display: block;
-  color: var(--muted);
-  font-size: .8rem;
-}
-
 .pill {
   display: inline-block;
   padding: .1rem .55rem;
@@ -296,19 +257,6 @@
 }
 
 @media (max-width: 560px) {
-  .diff-table {
-    font-size: .85rem;
-  }
-
-  .diff-table td.times {
-    white-space: normal;
-  }
-
-  .diff-table th,
-  .diff-table td {
-    padding: .5rem .3rem;
-  }
-
   .site-header {
     flex-wrap: wrap;
   }
@@ -438,12 +386,9 @@
 
 .planner-row.is-canceled .planner-time b,
 .planner-row.is-canceled .planner-station,
-.planner-train.is-canceled {
+.planner-train.is-canceled,
+.planner-train.is-canceled .vehicle-link {
   text-decoration: line-through;
   text-decoration-thickness: 1px;
 }
 
-.is-canceled-cell {
-  text-decoration: line-through;
-  text-decoration-thickness: 1px;
-}

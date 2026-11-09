@@ -34,9 +34,7 @@ const LIVE_INTERVAL_MS = 30_000;
 const el = (id) => document.getElementById(id);
 const statusEl = el("status");
 let originPicker, destinationPicker;
-let mapEndpoint = "origin";
 let journeyRunning = false;
-let mapJourneyPending = false;
 let journeyRevision = 0;
 const planButton = el("plan-button");
 
@@ -576,6 +574,19 @@ let profileFeatures = [],
   journeyFeatures = [];
 let routeDrawPending = false;
 
+// The route map is only for wide screens; on a phone it is not even loaded.
+const mapVisible = window.matchMedia("(min-width: 900px)");
+mapVisible.addEventListener("change", () => {
+  if (mapVisible.matches && !el("panel-planner").hidden)
+    ensureRouteMap()
+      .then((map) => {
+        map.resize();
+        syncRouteMarkers(true);
+        scheduleRouteDraw();
+      })
+      .catch(routeMapError);
+});
+
 function routeMapError(error) {
   console.error(error);
   el("route-map-status").textContent = `Map failed to load: ${error.message}`;
@@ -620,53 +631,12 @@ async function initializeRouteMap() {
       },
     });
   }
-  routeMap.on("click", ({ lngLat }) => {
-    if (!originPicker || !destinationPicker) return;
-    const value = { lon: lngLat.lng, lat: lngLat.lat };
-    const picker = mapEndpoint === "origin" ? originPicker : destinationPicker;
-    state[mapEndpoint] = value;
-    picker.setByValue(value);
-    syncRouteMarkers();
-    if (mapEndpoint === "origin") setMapEndpoint("destination");
-    if (state.origin && state.destination) {
-      // Keep only the latest pair if another scan is still running.
-      journeyRevision += 1;
-      if (journeyRunning) {
-        mapJourneyPending = true;
-        el("results").innerHTML = "";
-        clearRouteLines();
-        setStatus("Updating the journey for the selected points…");
-      } else el("journey-form").requestSubmit();
-    }
-  });
-  routeMap.getCanvas().style.cursor = "crosshair";
-  setMapEndpoint(mapEndpoint);
+  el("route-map-status").textContent =
+    "Select a journey to show it on the map.";
   syncRouteMarkers(true);
   scheduleRouteDraw();
   return routeMap;
 }
-
-function setMapEndpoint(endpoint) {
-  mapEndpoint = endpoint;
-  el("map-set-origin").setAttribute(
-    "aria-pressed",
-    String(endpoint === "origin"),
-  );
-  el("map-set-destination").setAttribute(
-    "aria-pressed",
-    String(endpoint === "destination"),
-  );
-  el("route-map-status").textContent =
-    `Click the map to set ${endpoint === "origin" ? "From (A)" : "To (B)"}.`;
-}
-el("map-set-origin").addEventListener("click", () => setMapEndpoint("origin"));
-el("map-set-destination").addEventListener("click", () =>
-  setMapEndpoint("destination"),
-);
-el("origin-input").addEventListener("focus", () => setMapEndpoint("origin"));
-el("destination-input").addEventListener("focus", () =>
-  setMapEndpoint("destination"),
-);
 
 function fitCoordinates(points) {
   if (!routeMap || !points.length) return;
@@ -966,7 +936,7 @@ function activateTab(tabId) {
     el(button).setAttribute("aria-selected", String(isActive));
     el(panel).hidden = !isActive;
   }
-  if (tabId === "tab-planner")
+  if (tabId === "tab-planner" && mapVisible.matches)
     ensureRouteMap()
       .then((map) => map.resize())
       .catch(routeMapError);
@@ -1250,10 +1220,6 @@ el("journey-form").addEventListener("submit", async (event) => {
     journeyRunning = false;
     planButton.disabled = false;
     if (livePending) refreshJourneys();
-    if (mapJourneyPending) {
-      mapJourneyPending = false;
-      el("journey-form").requestSubmit();
-    }
   }
 });
 
@@ -1394,5 +1360,5 @@ document.addEventListener("visibilitychange", () => {
   else startWatching({ immediate: true });
 });
 
-ensureRouteMap().catch(routeMapError);
+if (mapVisible.matches) ensureRouteMap().catch(routeMapError);
 init();

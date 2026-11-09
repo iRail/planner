@@ -100,8 +100,8 @@
                 />
                 <div class="suggestions" id="origin-suggestions"></div>
                 <p class="coordinate-hint">
-                  Coordinates: longitude, latitude (e.g. 3.709369, 51.010063),
-                  or click the map.
+                  Search by name, or enter coordinates: longitude, latitude
+                  (e.g. 3.709369, 51.010063).
                 </p>
               </div>
 
@@ -176,26 +176,11 @@
             <div id="results"></div>
           </div>
           <aside class="route-map-panel" aria-label="Route map">
-            <div
-              class="map-actions"
-              aria-label="Choose which endpoint a map click sets"
-            >
-              <button type="button" id="map-set-origin" aria-pressed="true">
-                Set From (A)
-              </button>
-              <button
-                type="button"
-                id="map-set-destination"
-                aria-pressed="false"
-              >
-                Set To (B)
-              </button>
-            </div>
             <div id="route-map"></div>
             <p class="map-hint" id="route-map-status">Loading map…</p>
             <p class="map-hint">
               Blue: connections added to the profile · Orange: walking · Green:
-              selected journey. Select a result to show its journey.
+              selected journey.
             </p>
           </aside>
         </div>

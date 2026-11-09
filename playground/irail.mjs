@@ -1,12 +1,14 @@
 import { resolveDataUrl } from "../src/planner-config.mjs";
 import { PlannerClient, createPlannerWorker } from "../src/browser.mjs";
 import { dataUrl } from "./config.mjs";
+import { createTrainViews } from "./trains.mjs";
 import {
   apiConnectionsUrl,
   compareJourneys,
   median,
   normalizeApiConnection,
   normalizePlannerJourney,
+  apiStationId,
   stationKey,
   zonedParts,
   zonedToEpoch,
@@ -233,6 +235,11 @@ function initialLanguage() {
     "en"
   );
 }
+// Trains and stations of both result lists open their run / liveboard.
+const trains = createTrainViews({
+  request: (type, payload) => state.planner.request(type, payload),
+  language: () => state.language,
+});
 state.language = initialLanguage();
 els.language.value = state.language;
 document.documentElement.lang = state.language;
@@ -282,11 +289,18 @@ const callPlanner = (query) =>
 const canceledTag = (canceled) =>
   canceled ? `<span class="canceled-tag">Canceled</span>` : "";
 
+// Stations and trains are plain placeholders here; `enhance` turns them into
+// buttons after the results are drawn.
+const stationHtml = (point) =>
+  point.key
+    ? `<span data-station="${escapeHtml(point.key)}" data-name="${escapeHtml(point.name)}">${escapeHtml(point.name)}</span>`
+    : escapeHtml(point.name);
+
 function stopRow(point, showPlatform = true) {
   return `
     <div class="planner-row${point.canceled ? " is-canceled" : ""}">
       <span class="planner-time"><b>${formatTime(point.time)}</b>${delayBadge(point.delay)}${canceledTag(point.canceled)}</span>
-      <span class="planner-station"><b>${escapeHtml(point.name)}</b></span>
+      <span class="planner-station"><b>${stationHtml(point)}</b></span>
       <span class="planner-platform">${showPlatform && point.platform ? `<span class="badge">${escapeHtml(point.platform)}</span>` : ""}</span>
     </div>`;
 }
@@ -294,7 +308,10 @@ function stopRow(point, showPlatform = true) {
 function legLine(leg) {
   if (leg.kind === "walk")
     return `<span class="planner-train">Walk${leg.meters ? ` ${Math.round(leg.meters)} m` : ""}</span>`;
-  return `<span class="planner-train${leg.canceled ? " is-canceled" : ""}">${escapeHtml(leg.label)}${leg.headsign ? ` → ${escapeHtml(leg.headsign)}` : ""}${canceledTag(leg.canceled)}</span>`;
+  const train = leg.vehicleId
+    ? `<span data-vehicle="${escapeHtml(leg.vehicleId)}" data-name="${escapeHtml(leg.label)}" data-date="${leg.date}" data-from="${escapeHtml(leg.from.key ?? "")}" data-to="${escapeHtml(leg.to.key ?? "")}">${escapeHtml(leg.label)}</span>`
+    : escapeHtml(leg.label);
+  return `<span class="planner-train${leg.canceled ? " is-canceled" : ""}">${train}${leg.headsign ? ` → ${escapeHtml(leg.headsign)}` : ""}${canceledTag(leg.canceled)}</span><div class="trip-host"></div>`;
 }
 
 function timeline(journey) {
@@ -380,12 +397,6 @@ function column(kind, title, subtitle, side, rows, error, openKeys) {
       ? `<div class="connections-list">${cards.join("")}</div>`
       : `<div class="empty-column">No journeys found.</div>`;
   return `<div class="compare-column is-${kind}"><h2>${title} <small>${subtitle}</small></h2>${body}</div>`;
-}
-
-function journeyCell(journey) {
-  if (!journey) return `<span class="absent">–</span>`;
-  const times = `${formatTime(journey.departure)} → ${formatTime(journey.arrival)}`;
-  return `${journey.canceled ? `<span class="is-canceled-cell">${times}</span>${canceledTag(true)}` : times}<span class="cell-note">${formatDuration(journey.arrival - journey.departure)} · ${transfersLabel(journey.transfers)}</span>`;
 }
 
 function verdictHtml(summary, api, planner) {
@@ -531,29 +542,6 @@ function timingHtml(t) {
     </section>`;
 }
 
-function tableHtml(rows) {
-  if (!rows.length) return "";
-  return `
-    <section class="compare-section">
-      <h2>Journeys</h2>
-      <div class="compare-panel table-scroll">
-        <table class="diff-table">
-          <thead><tr><th>iRail API</th><th>Planner</th><th>Result</th></tr></thead>
-          <tbody>${rows
-            .map(
-              (row) => `
-            <tr>
-              <td class="times">${journeyCell(row.api)}</td>
-              <td class="times">${journeyCell(row.planner)}</td>
-              <td><span class="pill is-${row.status}">${PILL[row.status]}</span>${row.notes.map((n) => `<span class="cell-note">${escapeHtml(n)}</span>`).join("")}</td>
-            </tr>`,
-            )
-            .join("")}</tbody>
-        </table>
-      </div>
-    </section>`;
-}
-
 // Station names shown for a journey come from the station table, in the chosen
 // language (the two sources spell and translate stations differently), then the
 // two result sets are diffed.
@@ -575,9 +563,39 @@ function render(run, openKeys) {
   els.results.innerHTML = [
     verdictHtml(comparison.summary, api, planner),
     timingHtml(timings),
-    tableHtml(rows),
     `<section class="compare-section"><div class="compare-columns">${column("api", "iRail API", "realtime", "api", rows, api.error, openKeys)}${column("planner", "Planner", "realtime", "planner", rows, planner.error, openKeys)}</div></section>`,
   ].join("");
+  enhance();
+}
+
+/**
+ * Turn the placeholders of a drawn result list into buttons: a station opens
+ * its liveboard, a train the run it makes that day (under its leg). Which runs
+ * are open survives a redraw.
+ */
+function enhance() {
+  for (const card of els.results.querySelectorAll(".result-card")) {
+    for (const node of card.querySelectorAll("[data-station]"))
+      node.replaceChildren(
+        trains.stationButton({
+          id: apiStationId(node.dataset.station),
+          name: node.dataset.name,
+        }),
+      );
+    for (const node of card.querySelectorAll("[data-vehicle]")) {
+      const { vehicle: id, name, date, from, to } = node.dataset;
+      const line = node.closest(".planner-train");
+      node.replaceChildren(
+        trains.vehicleButton({
+          vehicle: { id, name },
+          date: new Date(Number(date)),
+          highlight: from && to ? { from: apiStationId(from), to: apiStationId(to) } : undefined,
+          key: `cmp|${card.dataset.key}|${id}|${from}`,
+          panelHost: line.nextElementSibling,
+        }),
+      );
+    }
+  }
 }
 
 els.results.addEventListener("click", (event) => {
@@ -786,8 +804,12 @@ function startWatching({ immediate = false } = {}) {
     state.feed = event.detail[0];
     state.checkedAt = Date.now();
     showLive("live");
+    trains.refreshBoard();
   });
-  watcher.addEventListener("update", () => refreshResults());
+  watcher.addEventListener("update", () => {
+    refreshResults();
+    trains.refresh();
+  });
   watcher.addEventListener("error", () => showLive("stale"));
   state.watcher = watcher;
 }

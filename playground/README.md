@@ -27,7 +27,11 @@ On a journey, each leg names its train as the iRail API does (**IC 502**). Click
 train to unfold its run on that day: every stop with its time, delay, platform and
 cancellation, and the part of the run the journey rides marked. Click a station to open
 its real-time liveboard (departures and arrivals of the next hour, with delays, platforms
-and cancellations); trains on the board unfold the same way. Open panels and the board
+and cancellations); trains on the board unfold the same way. The iRail comparison page
+(`irail.html`) has the same clickable trains and stations in both of its result lists.
+
+Places are chosen with the search boxes only (a name, or `longitude, latitude`); the route
+map just shows the selected journey, and is hidden on screens narrower than 900 px. Open panels and the board
 are reloaded whenever the real-time feed changes.
 
 The build also generates a small, reproducible LC 2-alpha timetable with invented
