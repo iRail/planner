@@ -415,12 +415,13 @@ function renderOption(option, index) {
 
 // `refresh` redraws after a live update: the journey the reader was looking at
 // stays selected (when it still exists) and the map does not jump.
-function renderResults(result, { refresh = false } = {}) {
+function renderResults(result, { refresh = false, arriveBy = false } = {}) {
   const results = el("results");
   results.innerHTML = "";
   if (!result.options.length) {
-    results.textContent =
-      "No journey found within 24 hours across the selected networks.";
+    results.textContent = arriveBy
+      ? "No journey found that arrives by then, looking back two days, across the selected networks."
+      : "No journey found within 24 hours across the selected networks.";
     return;
   }
   if (!result.found) {
@@ -434,11 +435,13 @@ function renderResults(result, { refresh = false } = {}) {
   for (const [index, option] of result.options.entries())
     results.appendChild(renderOption(option, index));
   if (result.options.length) {
-    // Show on the map the first journey that can be traveled.
-    const firstPossible = result.options.findIndex((option) => !option.canceled);
+    // Show on the map the first journey that can be traveled, or when arriving
+    // by a time the last one: the latest you can leave.
+    const possible = result.options.map((option, i) => (option.canceled ? -1 : i)).filter((i) => i >= 0);
+    const best = arriveBy ? possible.at(-1) : possible[0];
     const index = refresh
       ? Math.min(state.selected, result.options.length - 1)
-      : Math.max(0, firstPossible);
+      : Math.max(0, best ?? 0);
     state.selected = index;
     results.querySelectorAll(".option")[index].setAttribute("aria-current", "true");
     showJourney(result.options[index], !refresh);
@@ -1193,15 +1196,13 @@ el("journey-form").addEventListener("submit", async (event) => {
     return;
   }
   const departureDate = new Date(el("departure-input").value);
+  const arriveBy = el("time-mode-input").value === "arrive";
   if (Number.isNaN(departureDate.getTime())) {
-    setStatus("Pick a valid departure date/time.", true);
+    setStatus(`Pick a valid ${arriveBy ? "arrival" : "departure"} date/time.`, true);
     return;
   }
-  const maxWalkMeters = Number(el("max-walk-input").value);
-  if (!Number.isFinite(maxWalkMeters) || maxWalkMeters < 0) {
-    setStatus("Max walking transfer must be a non-negative number.", true);
-    return;
-  }
+  // Walking between stations is not part of iRail, so journeys are by train only.
+  const maxWalkMeters = 0;
 
   journeyRunning = true;
   const revision = ++journeyRevision;
@@ -1211,7 +1212,7 @@ el("journey-form").addEventListener("submit", async (event) => {
   state.lastQuery = null;
   clearRouteLines();
   try {
-    const departureAfter = Math.floor(departureDate.getTime() / 1000);
+    const seconds = Math.floor(departureDate.getTime() / 1000);
     const windowMode = el("journey-window-input").value;
     const onProgress = ({ phase, completed, total, edges }) => {
       if (revision !== journeyRevision) return;
@@ -1234,7 +1235,12 @@ el("journey-form").addEventListener("submit", async (event) => {
     const query = {
       origin: state.origin,
       destination: state.destination,
-      departureAfter,
+      // Leaving after a time, or arriving by it (then the window is scanned
+      // backward from the deadline and needs no earliest-arrival pass).
+      ...(arriveBy
+        ? // The window before a deadline is arbitrary, so ask for a few journeys.
+          { arrivalBefore: seconds, minOptions: 6 }
+        : { departureAfter: seconds }),
       maxWalkMeters,
       windowMode,
       sourceIds: activeSources().map((source) => source.id),
@@ -1250,10 +1256,10 @@ el("journey-form").addEventListener("submit", async (event) => {
       : "";
     const hiddenNote =
       result.totalOptions > shown
-        ? ` (showing the first ${shown} of ${result.totalOptions} Pareto-optimal alternatives)`
+        ? ` (showing the ${arriveBy ? "last" : "first"} ${shown} of ${result.totalOptions} Pareto-optimal alternatives)`
         : "";
     const windowNote =
-      result.window && result.found
+      result.window && result.found && !arriveBy
         ? ` Search window: ${formatDuration(result.window.to - result.window.from)}${result.window.mode === "adaptive" ? " (twice earliest journey time, capped at 24 h)" : ""}.`
         : "";
     setStatus(
@@ -1264,7 +1270,7 @@ el("journey-form").addEventListener("submit", async (event) => {
           : `No journey found across the selected networks after scanning ${result.scanned.toLocaleString()} connections in ${elapsed} ms.`,
       !result.found,
     );
-    renderResults(result);
+    renderResults(result, { arriveBy });
     state.lastQuery = query;
     state.updatedAt = 0;
     if (state.feed?.supported) showLive(state.watcher ? "live" : "off");
@@ -1348,7 +1354,10 @@ async function refreshJourneys() {
   try {
     const result = await planner.request("plan", state.lastQuery);
     if (revision !== journeyRevision || journeyRunning) return;
-    renderResults(result, { refresh: true });
+    renderResults(result, {
+      refresh: true,
+      arriveBy: state.lastQuery.arrivalBefore !== undefined,
+    });
     state.updatedAt = Date.now();
     showLive(state.watcher ? "live" : "off", true);
   } catch (error) {
@@ -1418,3 +1427,8 @@ document.addEventListener("visibilitychange", () => {
 
 if (mapVisible.matches) ensureRouteMap().catch(routeMapError);
 init();
+
+// Arriving by a time needs no search window: it is scanned back from the deadline.
+el("time-mode-input").addEventListener("change", () => {
+  el("journey-window-input").disabled = el("time-mode-input").value === "arrive";
+});

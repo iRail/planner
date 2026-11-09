@@ -79,6 +79,17 @@ test("API URL uses Belgian local date and time", () => {
     ).searchParams.get("lang"),
     "nl",
   );
+  // Arriving by that time asks the API for the arrival side.
+  const arrival = new URL(
+    apiConnectionsUrl({
+      fromKey: "8892007",
+      toKey: "8841004",
+      departureAfter: Date.parse("2026-11-08T08:05:00Z") / 1000,
+      arriveBy: true,
+    }),
+  );
+  assert.equal(arrival.searchParams.get("timesel"), "arrival");
+  assert.equal(arrival.searchParams.get("time"), "0905");
 });
 
 const apiStop = (id, name, time, extra = {}) => ({

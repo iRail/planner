@@ -340,6 +340,103 @@ test("connections keeps searching until it has the requested number of options",
   assert.equal(rest.options.length, 2);
 });
 
+const departures = (offsets, { duration = 100 } = {}) =>
+  offsets.map((offset, i) => ({
+    departureStopIdx: 0,
+    arrivalStopIdx: 2,
+    departureTimeOffset: offset,
+    arrivalTimeOffset: offset + duration,
+    tripIdx: i,
+    stopSequence: 1,
+    arrivalStopSequence: 2,
+  }));
+const between = {
+  origin: { sourceId: "default", stopIdx: 0 },
+  destination: { sourceId: "default", stopIdx: 2 },
+  maxWalkMeters: 0,
+};
+
+test("plan arriving by a time returns the journeys closest to the deadline", async (t) => {
+  // Eight trains, every five minutes, each ride 100 s.
+  const { planner } = await setup(t, {
+    connections: departures(Array.from({ length: 8 }, (_, i) => i * 300)),
+    tripShortNames: [],
+  });
+  const arrivalBefore = start + 7 * 300 + 150;
+  const result = await planner.plan({ ...between, arrivalBefore, minOptions: 3 });
+  assert.equal(result.found, true);
+  // The last three trains, in departure order, none arriving after the deadline.
+  assert.deepEqual(
+    result.options.map((o) => o.departure),
+    [5, 6, 7].map((i) => start + i * 300),
+  );
+  assert.ok(result.options.every((o) => o.arrival <= arrivalBefore));
+  assert.equal(result.window.mode, "arrive-by");
+  assert.equal(result.window.to, arrivalBefore);
+  // The deadline is inclusive and a train arriving after it is left out.
+  const exact = await planner.plan({ ...between, arrivalBefore: start + 4 * 300 + 100 });
+  assert.equal(exact.options.at(-1).departure, start + 4 * 300);
+  const tight = await planner.plan({ ...between, arrivalBefore: start + 4 * 300 + 99 });
+  assert.equal(tight.options.at(-1).departure, start + 3 * 300);
+  // Without enough alternatives, every one that exists comes back.
+  const few = await planner.plan({ ...between, arrivalBefore: start + 2 * 300 + 150, minOptions: 6 });
+  assert.deepEqual(
+    few.options.map((o) => o.departure),
+    [0, 1, 2].map((i) => start + i * 300),
+  );
+});
+
+test("plan arriving by a time looks further back when nothing fits the first window", async (t) => {
+  const { planner } = await setup(t, {
+    connections: departures([10]),
+    tripShortNames: [],
+  });
+  // Six hours later: past the first three-hour look-back.
+  const result = await planner.plan({ ...between, arrivalBefore: start + 6 * 3600 });
+  assert.equal(result.found, true);
+  assert.equal(result.options[0].departure, start + 10);
+  // Nothing arrives that early.
+  const none = await planner.plan({ ...between, arrivalBefore: start + 50 });
+  assert.equal(none.found, false);
+  assert.deepEqual(none.options, []);
+});
+
+test("plan takes a departure time or an arrival time, not both", async (t) => {
+  const { planner } = await setup(t, { connections: departures([0]), tripShortNames: [] });
+  await assert.rejects(
+    planner.plan({ ...between, departureAfter: start, arrivalBefore: start + 3600 }),
+    /not both/u,
+  );
+});
+
+test("connections can arrive by a time", async (t) => {
+  const { planner } = await setup(t, {
+    connections: departures(Array.from({ length: 8 }, (_, i) => i * 300)),
+    tripShortNames: [],
+  });
+  const result = await planner.connections({
+    from: "Origin",
+    to: "Destination",
+    time: at(4 * 300 + 100),
+    arriveBy: true,
+    limit: 3,
+  });
+  // The three that get there latest without arriving after the time, earliest first.
+  assert.deepEqual(
+    result.map((c) => c.departure.getTime()),
+    [2, 3, 4].map((i) => at(i * 300).getTime()),
+  );
+  assert.ok(result.every((c) => c.arrival <= at(4 * 300 + 100)));
+  // Leaving after the same time goes the other way.
+  const forward = await planner.connections({
+    from: "Origin",
+    to: "Destination",
+    time: at(4 * 300),
+    limit: 3,
+  });
+  assert.equal(forward[0].departure.getTime(), at(4 * 300).getTime());
+});
+
 test("connections rejects bad requests and what it cannot answer yet", async (t) => {
   const { planner } = await setup(t);
   const base = { from: "Origin", to: "Destination", time: nine };
@@ -347,8 +444,8 @@ test("connections rejects bad requests and what it cannot answer yet", async (t)
   await assert.rejects(planner.connections({ ...base, to: "Nowhere" }), (e) => e.status === 404);
   await assert.rejects(planner.connections({ ...base, to: "Origin" }), (e) => e.status === 400);
   await assert.rejects(
-    planner.connections({ ...base, arriveBy: true }),
-    (e) => e instanceof NotSupportedError && /arriveBy/u.test(e.message),
+    planner.connections({ ...base, arriveBy: "yes" }),
+    (e) => e.status === 400 && /arriveBy/u.test(e.message),
   );
   await assert.rejects(
     planner.connections({ ...base, vehicles: "trains" }),

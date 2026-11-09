@@ -421,7 +421,9 @@ export function createProfileSearch(
     onReach?.(dRoot, dep, canBoard);
     return changed;
   };
-  function finish(scanned) {
+  // At most six journeys: the earliest departing, or with `latest` (arriving by
+  // a deadline) the ones closest to the deadline.
+  function finish(scanned, { latest = false } = {}) {
     // Resolve walking access once, after the scan. Intermediate walking was
     // resolved at arrival lookup, avoiding a label copy at every nearby stop.
     const originProfile = network.stopCount;
@@ -486,7 +488,7 @@ export function createProfileSearch(
       (a, b) =>
         store.dep[a] - store.dep[b] || store.arrival[a] - store.arrival[b],
     );
-    const options = candidates.slice(0, 6).map((id) => {
+    const options = (latest ? candidates.slice(-6) : candidates.slice(0, 6)).map((id) => {
       const legs = [];
       for (let entry = id; entry !== -1; entry = store.next[entry]) {
         const resolve = endpoints?.localStop ?? network.localStop;

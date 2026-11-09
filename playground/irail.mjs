@@ -136,6 +136,17 @@ function setDateTime(epochSeconds) {
   els.time.value = `${pad(p.hour)}:${pad(p.minute)}`;
 }
 
+// Arriving by a time needs no search window (the planner scans back from it).
+function syncTimeMode() {
+  const arrival = els.timesel.value === "arrival";
+  el("route-time-label").textContent = arrival ? "Arrival time" : "Departure time";
+  els.window.disabled = arrival;
+  el("route-time-note").textContent = arrival
+    ? "journeys arriving at or before"
+    : "departures at or after";
+}
+els.timesel.addEventListener("change", syncTimeMode);
+
 function departureEpoch() {
   const iso = dateInputToIso(els.date.value);
   const [year, month, day] = iso.split("-").map(Number);
@@ -399,7 +410,7 @@ function column(kind, title, subtitle, side, rows, error, openKeys) {
   return `<div class="compare-column is-${kind}"><h2>${title} <small>${subtitle}</small></h2>${body}</div>`;
 }
 
-function verdictHtml(summary, api, planner) {
+function verdictHtml(summary, api, planner, latest) {
   if (api.error || planner.error) {
     const failed = [api.error && "iRail API", planner.error && "planner"]
       .filter(Boolean)
@@ -409,10 +420,15 @@ function verdictHtml(summary, api, planner) {
   const { apiCount, plannerCount } = summary;
   if (!apiCount && !plannerCount)
     return `<section class="compare-section"><div class="compare-panel verdict is-warn"><strong>Neither found a journey</strong><span>Try another time or date.</span></div></section>`;
-  const agree = summary.sameEarliestArrival;
+  // Arriving by a time, what matters is how late you can leave, not how early you get there.
+  const agree = latest ? latest.api === latest.planner : summary.sameEarliestArrival;
   const clean = !summary.differs && !summary.onlyApi && !summary.onlyPlanner;
   const level = agree && clean ? "" : agree ? "is-warn" : "is-bad";
-  const headline = agree
+  const headline = latest
+    ? agree
+      ? `Same latest departure: ${formatTime(latest.api)}`
+      : `Different latest departure: iRail ${Number.isFinite(latest.api) ? formatTime(latest.api) : "–"}, planner ${Number.isFinite(latest.planner) ? formatTime(latest.planner) : "–"}`
+    : agree
     ? `Same earliest arrival: ${formatTime(summary.apiEarliestArrival)}`
     : `Different earliest arrival: iRail ${summary.apiEarliestArrival ? formatTime(summary.apiEarliestArrival) : "–"}, planner ${summary.plannerEarliestArrival ? formatTime(summary.plannerEarliestArrival) : "–"}`;
   const details = [
@@ -557,11 +573,20 @@ function analyse(run) {
   });
 }
 
+// Arriving by a time: the latest scheduled departure of each side that can be
+// traveled, or undefined when the search was not "arrive by".
+function latestDepartures(run) {
+  if (run.query?.arrivalBefore === undefined) return undefined;
+  const latest = (journeys) =>
+    Math.max(-Infinity, ...journeys.filter((j) => !j.canceled).map((j) => j.departure));
+  return { api: latest(run.apiJourneys), planner: latest(run.plannerJourneys) };
+}
+
 function render(run, openKeys) {
   const { api, planner, comparison, timings } = run;
   const rows = comparison.rows;
   els.results.innerHTML = [
-    verdictHtml(comparison.summary, api, planner),
+    verdictHtml(comparison.summary, api, planner, latestDepartures(run)),
     timingHtml(timings),
     `<section class="compare-section"><div class="compare-columns">${column("api", "iRail API", "realtime", "api", rows, api.error, openKeys)}${column("planner", "Planner", "realtime", "planner", rows, planner.error, openKeys)}</div></section>`,
   ].join("");
@@ -609,8 +634,10 @@ function showAlert(type, message) {
   els.alert.innerHTML = `<div class="alert alert-${type}">${escapeHtml(message)}</div>`;
 }
 
-function updateUrl(from, to, epoch) {
+function updateUrl(from, to, epoch, arriveBy = false) {
   const p = new URLSearchParams(location.search);
+  if (arriveBy) p.set("timesel", "arrival");
+  else p.delete("timesel");
   const parts = zonedParts(epoch);
   p.set("from", from.key);
   p.set("to", to.key);
@@ -662,12 +689,11 @@ async function search() {
   }
   Object.assign(state, { from, to });
   showStationNames();
-  const departureAfter = departureEpoch();
-  const maxWalkMeters = Math.min(
-    5000,
-    Math.max(0, Math.round(Number(els.walk.value) || 0)),
-  );
-  updateUrl(from, to, departureAfter);
+  const arriveBy = els.timesel.value === "arrival";
+  // The moment asked for: when to leave after, or when to arrive by.
+  const moment = departureEpoch();
+  const maxWalkMeters = 0; // like the iRail API, journeys are by train only
+  updateUrl(from, to, moment, arriveBy);
 
   state.running = true;
   els.search.disabled = true;
@@ -680,13 +706,14 @@ async function search() {
     const apiUrl = apiConnectionsUrl({
       fromKey: from.key,
       toKey: to.key,
-      departureAfter,
+      departureAfter: moment,
+      arriveBy,
       language: state.language,
     });
     const query = {
       origin: { sourceId: state.source.id, stopIdx: from.stopIdx },
       destination: { sourceId: state.source.id, stopIdx: to.stopIdx },
-      departureAfter,
+      ...(arriveBy ? { arrivalBefore: moment } : { departureAfter: moment }),
       maxWalkMeters,
       windowMode: els.window.value,
       // Like the API's six results: keep searching past the window until found.
@@ -906,6 +933,8 @@ async function init() {
     const toParam = byKey(stationKey(`/stops/${params.get("to")}`) ?? "");
     const date = dateInputToIso(isoToDateInput(params.get("date") ?? ""));
     const time = isValidTimeInput(params.get("time") ?? "") ? params.get("time") : "";
+    els.timesel.value = params.get("timesel") === "arrival" ? "arrival" : "departure";
+    syncTimeMode();
     if (date && time) {
       els.date.value = isoToDateInput(date);
       els.time.value = time;

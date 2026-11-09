@@ -498,11 +498,9 @@ async function connections(core, sources, payload, now, plan) {
   const context = await makeContext(core, sources, payload);
   const from = lookupStation(context, payload.from, "from");
   const to = lookupStation(context, payload.to, "to");
-  if (payload.arriveBy !== undefined && payload.arriveBy !== false)
-    throw new NotSupportedError(
-      "connections with arriveBy",
-      "the planner only searches forward from a departure time",
-    );
+  const arriveBy = payload.arriveBy ?? false;
+  if (typeof arriveBy !== "boolean")
+    throw new IrailApiError(400, "arriveBy must be true or false");
   const vehicles = payload.vehicles ?? "all";
   if (vehicles !== "all") {
     if (["trains", "domestic-trains"].includes(vehicles))
@@ -524,7 +522,10 @@ async function connections(core, sources, payload, now, plan) {
     {
       origin: { sourceId: context.source.id, stopIdx: from.stopIdx },
       destination: { sourceId: context.source.id, stopIdx: to.stopIdx },
-      departureAfter: instantOf(payload.time, now),
+      // Leaving after `time`, or arriving by it (the latest journeys that do).
+      ...(arriveBy
+        ? { arrivalBefore: instantOf(payload.time, now) }
+        : { departureAfter: instantOf(payload.time, now) }),
       maxWalkMeters: payload.maxWalkMeters ?? 0,
       windowMode: "adaptive",
       minOptions: wanted,
@@ -535,10 +536,12 @@ async function connections(core, sources, payload, now, plan) {
   );
   // `limit` counts journeys that can be traveled; the canceled ones among them
   // come on top, so a canceled train never costs a possible journey its place.
+  // Arriving by a time, the ones that count are those closest to the deadline.
   let possible = 0;
-  const journeys = result.options.filter(
-    (option) => option.canceled || ++possible <= wanted,
-  );
+  const kept = new Set();
+  for (const option of arriveBy ? [...result.options].reverse() : result.options)
+    if (option.canceled || ++possible <= wanted) kept.add(option);
+  const journeys = result.options.filter((option) => kept.has(option));
   const intermediates = await intermediateStops(context, journeys);
   return journeys.map((journey) => {
     // Journey times are scheduled; the delays are those of the first and the

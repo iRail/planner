@@ -4,6 +4,7 @@ import { IrailApiError } from "./irail-errors.mjs";
 const IRAIL_CALLS = new Set(["stations", "liveboard", "connections", "vehicle"]);
 const FILL_HORIZON = 2 * 86400; // how far past the request to look for more options
 const FILL_ROUNDS = 8;
+const ARRIVE_STEP = 3 * 3600; // how far before the deadline an arrive-by search first looks
 
 export function createPlannerService(planner) {
   let sources = [];
@@ -66,7 +67,15 @@ export function createPlannerService(planner) {
   // flagged `canceled: true`, among the others by departure time. They never
   // count toward `minOptions` or `found`, and never push a possible journey out.
   async function planLabeled(payload, selected, onProgress) {
-    const { minOptions = 0, includeCanceled = true, ...query } = payload;
+    const {
+      minOptions = 0,
+      includeCanceled = true,
+      arrivalBefore,
+      ...query
+    } = payload;
+    const arriveBy = arrivalBefore !== undefined;
+    if (arriveBy && query.departureAfter !== undefined)
+      throw new Error("Give departureAfter or arrivalBefore, not both");
     const search = (departureAfter, extra) =>
       planner.planJourneys({
         ...query,
@@ -75,47 +84,97 @@ export function createPlannerService(planner) {
         onProgress,
         ...extra,
       });
-    let result = await search(query.departureAfter);
-    let extended = false;
-    for (
-      let round = 0;
-      round < FILL_ROUNDS &&
-      result.found &&
-      result.options.length < minOptions;
-      round += 1
-    ) {
-      const cursor = result.options.at(-1).departure + 1;
-      if (cursor >= query.departureAfter + FILL_HORIZON) break;
-      const next = await search(cursor);
-      if (!next.options.length) break;
-      extended = true;
-      result = {
-        ...result,
-        options: [...result.options, ...next.options],
-        totalOptions: result.totalOptions + next.totalOptions,
-        scanned: result.scanned + next.scanned,
-        window: {
-          ...result.window,
-          to: Math.max(result.window.to, next.window.to),
-        },
-      };
+    // Journeys that arrive by `latest` and leave within `lookback` before it.
+    const searchBack = (latest, lookback, extra) =>
+      search(latest - lookback, { arrivalBefore: latest, ...extra });
+    const merge = (first, second) => ({
+      ...first,
+      options: [...first.options, ...second.options],
+      totalOptions: first.totalOptions + second.totalOptions,
+      scanned: first.scanned + second.scanned,
+      window: {
+        ...first.window,
+        from: Math.min(first.window.from, second.window.from),
+        to: Math.max(first.window.to, second.window.to),
+      },
+    });
+    let result;
+    let extended = false; // a forward search that went on past its first window
+    let reachedBack = 0; // how far before the deadline the search looked
+    if (arriveBy) {
+      let lookback = ARRIVE_STEP;
+      result = await searchBack(arrivalBefore, lookback);
+      // Nothing in the window: look further back, up to two days.
+      while (!result.found && lookback < FILL_HORIZON) {
+        lookback = Math.min(lookback * 2, FILL_HORIZON);
+        result = await searchBack(arrivalBefore, lookback);
+      }
+      reachedBack = lookback;
+      // Fewer than asked for: journeys that arrive before the earliest found,
+      // which can only leave earlier than it (or the earliest would not be best).
+      for (
+        let round = 0;
+        round < FILL_ROUNDS &&
+        result.found &&
+        result.options.length < minOptions;
+        round += 1
+      ) {
+        const latest = result.options[0].arrival - 1;
+        let step = ARRIVE_STEP;
+        let next = await searchBack(latest, step);
+        while (!next.options.length && step < FILL_HORIZON) {
+          step = Math.min(step * 2, FILL_HORIZON);
+          next = await searchBack(latest, step);
+        }
+        if (!next.options.length || arrivalBefore - latest >= FILL_HORIZON)
+          break;
+        reachedBack = arrivalBefore - (latest - step);
+        result = merge(next, result);
+      }
+      // The number asked for: those closest to the deadline.
+      if (result.options.length > minOptions && minOptions > 0)
+        result = { ...result, options: result.options.slice(-minOptions) };
+    } else {
+      result = await search(query.departureAfter);
+      for (
+        let round = 0;
+        round < FILL_ROUNDS &&
+        result.found &&
+        result.options.length < minOptions;
+        round += 1
+      ) {
+        const cursor = result.options.at(-1).departure + 1;
+        if (cursor >= query.departureAfter + FILL_HORIZON) break;
+        const next = await search(cursor);
+        if (!next.options.length) break;
+        extended = true;
+        result = merge(result, next);
+      }
+      // A search that had to continue returns the number asked for, not a few more.
+      if (result.options.length > minOptions && minOptions > 0 && extended)
+        result = { ...result, options: result.options.slice(0, minOptions) };
     }
-    // A search that had to continue returns the number asked for, not a few more.
-    if (result.options.length > minOptions && minOptions > 0 && extended)
-      result = { ...result, options: result.options.slice(0, minOptions) };
     onProgress?.({ phase: "labels" });
     label(result, selected);
     result.canceledOptions = 0;
     if (includeCanceled && planner.hasDisruptions?.(selected)) {
       // The same search with canceled trains left in. Only what depends on them
       // is new; it is shown as far as the possible journeys reach.
-      const withCanceled = label(
-        await search(query.departureAfter, { includeCanceled: true, onProgress: undefined }),
-        selected,
-      );
-      const reach = result.options.at(-1)?.departure ?? Infinity;
+      const extra = { includeCanceled: true, onProgress: undefined };
+      let withCanceled;
+      let within;
+      if (arriveBy) {
+        const lower = result.options[0]?.departure ?? arrivalBefore - reachedBack;
+        withCanceled = await search(lower, { arrivalBefore, ...extra });
+        within = (option) => option.departure >= lower;
+      } else {
+        withCanceled = await search(query.departureAfter, extra);
+        const reach = result.options.at(-1)?.departure ?? Infinity;
+        within = (option) => option.departure <= reach;
+      }
+      label(withCanceled, selected);
       const impossible = withCanceled.options.filter(
-        (option) => option.canceled && option.departure <= reach,
+        (option) => option.canceled && within(option),
       );
       result.options = [...result.options, ...impossible].sort(
         (a, b) => a.departure - b.departure || a.arrival - b.arrival,

@@ -24,6 +24,7 @@ export function apiConnectionsUrl({
   departureAfter,
   results = 6,
   language = "en",
+  arriveBy = false,
 }) {
   const p = zonedParts(departureAfter);
   const params = new URLSearchParams({
@@ -31,7 +32,7 @@ export function apiConnectionsUrl({
     to: apiStationId(toKey),
     date: `${pad(p.day)}${pad(p.month)}${pad(p.year % 100)}`,
     time: `${pad(p.hour)}${pad(p.minute)}`,
-    timesel: "departure",
+    timesel: arriveBy ? "arrival" : "departure",
     results: String(results),
     format: "json",
     lang: language,

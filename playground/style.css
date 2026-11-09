@@ -72,6 +72,17 @@ label {
   color: var(--muted);
   margin-bottom: 6px;
 }
+.when-row {
+  display: flex;
+  gap: 8px;
+}
+.when-row select {
+  flex: 0 0 auto;
+}
+.when-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .field {
   position: relative;
   margin-bottom: 16px;

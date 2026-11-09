@@ -232,6 +232,7 @@ export function createPlanner(
     onProgress,
     windowMode = "adaptive",
     includeCanceled = false,
+    arrivalBefore,
   }) {
     if (
       !Number.isFinite(departureAfter) ||
@@ -242,7 +243,16 @@ export function createPlanner(
       throw new Error("Invalid departure time or walking limit (0–5000 m)");
     if (windowMode !== "adaptive" && windowMode !== "full")
       throw new Error("Unknown journey window mode");
-    const maximum = departureAfter + 86400;
+    // Arriving by a moment: the window is [departureAfter, arrivalBefore] and
+    // is scanned backward from the deadline, so no earliest-arrival pass is
+    // needed to size it.
+    const arriveBy = arrivalBefore !== undefined;
+    if (arriveBy) {
+      if (!Number.isFinite(arrivalBefore) || arrivalBefore <= departureAfter)
+        throw new Error("Invalid arrival time: it must be after the window start");
+      windowMode = "full";
+    }
+    const maximum = arriveBy ? arrivalBefore : departureAfter + 86400;
     let to = maximum;
     // Canceled trips and skipped stops stay usable in this search, so journeys
     // that depend on them can be found (and flagged by the caller).
@@ -272,7 +282,7 @@ export function createPlanner(
         totalOptions: 1,
         scanned: 0,
         window: {
-          mode: windowMode,
+          mode: arriveBy ? "arrive-by" : windowMode,
           from: departureAfter,
           to: windowMode === "full" ? maximum : departureAfter + 1,
           earliestArrival: windowMode === "full" ? null : departureAfter,
@@ -335,7 +345,7 @@ export function createPlanner(
           totalOptions: 0,
           scanned: forward.scanned,
           window: {
-            mode: windowMode,
+            mode: arriveBy ? "arrive-by" : windowMode,
             from: departureAfter,
             to: maximum,
             earliestArrival: null,
@@ -441,11 +451,11 @@ export function createPlanner(
         timeAt(batch, "arr", row) <=
           scan.bounds[network.root[batch.source.stopOffset + batch.aS[row]]],
     });
-    const result = search.finish(backward.scanned);
+    const result = search.finish(backward.scanned, { latest: arriveBy });
     flushEdges();
     result.scanned += forward.scanned;
     result.window = {
-      mode: windowMode,
+      mode: arriveBy ? "arrive-by" : windowMode,
       from: departureAfter,
       to,
       earliestArrival: earliestArrival ?? null,

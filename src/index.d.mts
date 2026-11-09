@@ -34,8 +34,18 @@ export interface PlannerOptions {
 export interface JourneyQuery {
   origin: Endpoint;
   destination: Endpoint;
-  /** UTC epoch seconds. */
-  departureAfter: number;
+  /**
+   * UTC epoch seconds: journeys leave at or after this. Give this or
+   * `arrivalBefore`, not both.
+   */
+  departureAfter?: number;
+  /**
+   * UTC epoch seconds: journeys arrive at or before this, the ones closest to
+   * it. Scanned backward from the deadline (no window heuristic; `windowMode`
+   * is ignored), three hours back first, up to two days if nothing fits. The
+   * result has up to six journeys, the last leaving latest.
+   */
+  arrivalBefore?: number;
   maxWalkMeters?: number;
   sourceIds?: string[];
   windowMode?: "adaptive" | "full";
@@ -280,7 +290,10 @@ export interface ConnectionsQuery extends IrailQuery {
   limit?: number;
   /** Walking between stations, in meters (0–5000). Default 0. */
   maxWalkMeters?: number;
-  /** Arrive by `time` instead of leaving after it. Not supported yet. */
+  /**
+   * Arrive by `time` instead of leaving after it: the `limit` journeys that
+   * get there latest without arriving after it.
+   */
   arriveBy?: boolean;
   /** `all` is supported; `trains` and `domestic-trains` are not yet. */
   vehicles?: "all" | "trains" | "domestic-trains";

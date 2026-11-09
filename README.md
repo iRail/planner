@@ -110,7 +110,8 @@ separate instances for independent concurrent workloads.
 | `await planner.isochrone(query, onProgress?)`       | `{ found, noAccess, origin, points, maxWalkMeters, scanned, pages, diagnostics }`. Points include coordinates, names, networks and `durationSeconds`. |
 | `await planner.request(type, payload, onProgress?)` | The underlying message protocol (`init`, `plan`, `isochrone` and the iRail calls), also used by `PlannerClient`.                                      |
 
-Journey queries require `origin`, `destination` and `departureAfter`. Optional
+Journey queries require `origin`, `destination` and either `departureAfter` (leave
+at or after) or `arrivalBefore` (arrive at or before; see below), as UTC epoch seconds. Optional
 `sourceIds` selects active networks; omitting it uses all loaded networks.
 `maxWalkMeters` defaults to 1000 in `plan`/`isochrone` and must be between 0 and 5000. Low-level `request` calls must supply it explicitly.
 
@@ -296,9 +297,9 @@ four to six allow one, longer text two; a missing, extra, wrong or swapped lette
 Pass `fuzzy: false` for exact matching only. Names given to the other calls (`liveboard`,
 `connections`, …) stay strict: a typo there is a 404, not another station.
 
-Not yet supported inside supported calls: `connections` with `arriveBy: true` (the
-planner searches forward from a time) and `vehicles` other than `all`. They reject with
-a `NotSupportedError` too.
+`connections({ arriveBy: true })` treats `time` as the moment to arrive by (see "Arriving by
+a time"). Not yet supported inside supported calls: `vehicles` other than `all`, which
+rejects with a `NotSupportedError`.
 
 Errors are `IrailApiError`s with the HTTP `status` the iRail API would use: 400 for a
 missing or malformed parameter, 404 for an unknown station or train. A
@@ -393,6 +394,17 @@ arrival within 24 elapsed hours, then scans twice that elapsed time, capped at
 24 hours. It is a heuristic and may exclude later or slower journeys. Set
 `windowMode: 'full'` for the complete 24-hour window. UTC timestamps avoid DST
 arithmetic errors; `serviceDate` keeps each vehicle run separate.
+
+**Arriving by a time.** Pass `arrivalBefore` instead of `departureAfter` to get the journeys
+that arrive at or before it, the ones closest to the deadline: the profile scan runs
+backward from the deadline, so no earliest-arrival pass is needed to size a window (and
+`windowMode` is ignored). A search looks three hours back first and, if nothing fits, up to
+two days; the result holds up to six journeys, in departure order, ending with the one that
+leaves latest. With `minOptions` it keeps going earlier until it has that many (it then holds
+exactly that many, the closest to the deadline). `result.window.mode` is `"arrive-by"`.
+`connections({ time, arriveBy: true })` does the same through the iRail call: the `limit`
+journeys closest to `time`. The deadline is a time the journey must arrive by including
+real-time delays. Giving both `departureAfter` and `arrivalBefore` is an error.
 
 The planner groups station platforms, considers selected networks together
 (including A → B → A journeys), and supports straight-line walking at 5 km/h at

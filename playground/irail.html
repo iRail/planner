@@ -104,7 +104,14 @@
 
         <div class="time-grid">
           <div class="field compact-field">
-            <label for="route-time">Departure time</label>
+            <label for="route-timesel">Time is</label>
+            <select id="route-timesel">
+              <option value="departure">Departure</option>
+              <option value="arrival">Arrival</option>
+            </select>
+          </div>
+          <div class="field compact-field">
+            <label for="route-time" id="route-time-label">Time</label>
             <input
               id="route-time"
               type="text"
@@ -168,7 +175,9 @@
             >The adaptive window is a faster heuristic that can miss slower
             journeys arriving late; the full window searches 24 hours. Either
             way the planner keeps searching later departures until it has six
-            alternatives, like the API's six results.</span
+            alternatives, like the API's six results. Arriving by a time, the
+            planner scans back from it (no window is needed) and keeps going
+            earlier until it has six.</span
           >
         </p>
       </form>
