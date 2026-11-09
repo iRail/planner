@@ -137,18 +137,6 @@
             />
           </div>
           <div class="field compact-field">
-            <label for="route-walk">Max walk (m)</label>
-            <input
-              id="route-walk"
-              type="number"
-              min="0"
-              max="5000"
-              step="50"
-              value="0"
-              aria-describedby="walk-note"
-            />
-          </div>
-          <div class="field compact-field">
             <label for="route-window">Planner window</label>
             <select id="route-window" aria-describedby="window-note">
               <option value="adaptive">Adaptive</option>
@@ -166,10 +154,10 @@
         </div>
         <p class="form-note" id="format-note">
           Times are Belgian local time (DD/MM/YYYY, 24-hour HH:MM). Both sides
-          look for departures at or after this time.
+          look for <span id="route-time-note">departures at or after</span> this
+          time.
           <span id="walk-note"
-            >Walking between stations is off by default, like in the iRail
-            API.</span
+            >Walking between stations is off, like in the iRail API.</span
           >
           <span id="window-note"
             >The adaptive window is a faster heuristic that can miss slower

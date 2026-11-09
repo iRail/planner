@@ -331,14 +331,10 @@ footer code {
   top: 16px;
   min-width: 0;
 }
-.map-hint,
-.coordinate-hint {
+.map-hint {
   color: var(--muted);
   font-size: 0.8rem;
   line-height: 1.5;
-}
-.coordinate-hint {
-  margin: 6px 0 0;
 }
 #route-map {
   height: min(70vh, 640px);

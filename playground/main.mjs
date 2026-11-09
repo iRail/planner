@@ -174,13 +174,7 @@ function setupAutocomplete(inputId, suggestionsId, onPick) {
 
   input.addEventListener("input", () => {
     selected = null;
-    const point = parseCoordinates(input.value);
-    onPick(point);
-    if (point) {
-      selected = point;
-      box.innerHTML = "";
-      return;
-    }
+    onPick(null);
     const query = input.value.trim().toLowerCase();
     if (query.length < 1) {
       box.innerHTML = "";
@@ -208,27 +202,11 @@ function setupAutocomplete(inputId, suggestionsId, onPick) {
         input.value = "";
         return;
       }
-      if (value.lat !== undefined) {
-        input.value = `${value.lon.toFixed(6)}, ${value.lat.toFixed(6)}`;
-        return;
-      }
       const source = findSource(value.sourceId);
       input.value =
         source.stops.name[value.stopIdx] || source.stops.id[value.stopIdx];
     },
   };
-}
-
-function parseCoordinates(value) {
-  const match = value
-    .trim()
-    .match(
-      /^([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*[,;]\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))$/,
-    );
-  if (!match) return null;
-  const lon = Number(match[1]),
-    lat = Number(match[2]);
-  return Math.abs(lon) <= 180 && Math.abs(lat) <= 90 ? { lon, lat } : null;
 }
 
 function endpointLabel(value) {
@@ -1190,7 +1168,7 @@ el("journey-form").addEventListener("submit", async (event) => {
   if (journeyRunning) return;
   if (!state.origin || !state.destination) {
     setStatus(
-      "Choose both endpoints using stop suggestions, longitude/latitude, or the map.",
+      "Choose both stations from the suggestions.",
       true,
     );
     return;
