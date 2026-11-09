@@ -286,7 +286,12 @@ Delays, cancellations and platforms come from the real-time feed (see
 `false` and `platform` is `null`. Station labels, translations and the traffic figures that rank
 station search results come from the iRail CDN's `stations.arrow` extension, loaded on
 first use; without it the timetable's own stop names are used. A leg's `direction` is the
-timetable's published headsign.
+headsign the train shows, in the query's `language` (`nl`, `fr`, `en`, `de`) from the CDN's
+`headsigns.arrow` extension. The timetable publishes one text per trip, in the language of
+the operator's data; without a translation, or in `fr`, you get that text. `plan()` does
+the same with `language`: each ride leg's `headsign` is in that language and `headsigns`
+holds every one (`{ fr, nl, de, en }`), so a page can switch language without planning again.
+Without `language`, `plan()` leaves headsigns as published.
 
 `stations({ query })` searches like the station box of irail.be: stations whose name, in any
 language and ignoring accents and case, equals, starts with or contains the text come first

@@ -14,6 +14,11 @@ skipped stops and platforms.
 
 ### Added
 
+- **Headsigns in your language.** The iRail CDN's `headsigns.arrow` extension is
+  loaded on first use. A connection's `direction` is now in the query's
+  `language`, and `plan()` takes `language` too: each ride leg's `headsign` is in
+  that language, and `headsigns` has all of them. Without a translation the
+  published headsign stays.
 - **Real-time data.** When the manifest names a GTFS Realtime feed
   (`realtime` → `GtfsRealtimeFeed`, as the iRail CDN does), `init()` loads it and
   every search uses it. It is applied while connections are read, so journeys,

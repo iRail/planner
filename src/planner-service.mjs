@@ -1,5 +1,6 @@
 import { createIrailApi, vehicleOf, vehicleView } from "./irail-api.mjs";
 import { IrailApiError } from "./irail-errors.mjs";
+import { normalizeLanguage } from "./irail-stations.mjs";
 
 const IRAIL_CALLS = new Set(["stations", "liveboard", "connections", "vehicle"]);
 const FILL_HORIZON = 2 * 86400; // how far past the request to look for more options
@@ -10,11 +11,22 @@ export function createPlannerService(planner) {
   let sources = [];
   const irail = createIrailApi(planner);
 
+  // The headsign of a leg, in the reader's language when there is one (and then
+  // the texts in every language, so a page can switch without planning again).
+  function headsignsOf(headsigns, source, text) {
+    const directory = headsigns?.directories.get(source);
+    if (!directory) return { headsign: text };
+    return {
+      headsign: directory.translate(text, headsigns.language),
+      headsigns: directory.all(text),
+    };
+  }
+
   // Route and stop identifiers, real-time delays and platforms on every ride
   // leg, and whether the leg can be used: a ride is canceled when its trip is,
   // and either end is when the stop is skipped. Times are already real-time
   // adjusted; the delays say by how much.
-  function label(result, selected) {
+  function label(result, selected, headsigns) {
     for (const option of result.options) {
       for (const leg of option.legs) {
         if (leg.kind !== "ride") continue;
@@ -45,7 +57,7 @@ export function createPlannerService(planner) {
           canceled: Boolean(board?.canceled || alight?.canceled),
           routeName: route.shortName || route.longName || "",
           routeType: route.routeType,
-          headsign: trip.headsign || "",
+          ...headsignsOf(headsigns, source, trip.headsign || ""),
           vehicle: vehicleView(vehicleOf(source, leg.trip)),
           tripIri: trip.iri,
           routeIri: route.iri,
@@ -71,8 +83,24 @@ export function createPlannerService(planner) {
       minOptions = 0,
       includeCanceled = true,
       arrivalBefore,
+      language,
       ...query
     } = payload;
+    // Headsigns in the reader's language; as the timetable published them without.
+    let headsigns;
+    if (language !== undefined && language !== "") {
+      const lang = normalizeLanguage(language);
+      if (!lang) throw new Error("language must be one of nl, fr, en, de");
+      const directories = new Map(
+        await Promise.all(
+          selected.map(async (source) => [
+            source,
+            await planner.headsignDirectory?.(source),
+          ]),
+        ),
+      );
+      headsigns = { language: lang, directories };
+    }
     const arriveBy = arrivalBefore !== undefined;
     if (arriveBy && query.departureAfter !== undefined)
       throw new Error("Give departureAfter or arrivalBefore, not both");
@@ -155,7 +183,7 @@ export function createPlannerService(planner) {
         result = { ...result, options: result.options.slice(0, minOptions) };
     }
     onProgress?.({ phase: "labels" });
-    label(result, selected);
+    label(result, selected, headsigns);
     result.canceledOptions = 0;
     if (includeCanceled && planner.hasDisruptions?.(selected)) {
       // The same search with canceled trains left in. Only what depends on them
@@ -172,7 +200,7 @@ export function createPlannerService(planner) {
         const reach = result.options.at(-1)?.departure ?? Infinity;
         within = (option) => option.departure <= reach;
       }
-      label(withCanceled, selected);
+      label(withCanceled, selected, headsigns);
       const impossible = withCanceled.options.filter(
         (option) => option.canceled && within(option),
       );

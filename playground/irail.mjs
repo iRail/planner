@@ -568,6 +568,10 @@ function analyse(run) {
         const station = state.byKey.get(point.key);
         if (station) point.name = stationLabel(station, state.language);
       }
+  // The planner sends the headsign in every language, so a new language needs no new search.
+  for (const journey of run.plannerJourneys)
+    for (const leg of journey.legs)
+      if (leg.headsigns) leg.headsign = leg.headsigns[state.language] ?? leg.headsigns.fr ?? leg.headsign;
   run.comparison = compareJourneys(run.apiJourneys, run.plannerJourneys, {
     plannerWindow: run.planner.error ? undefined : run.planner.value.window,
   });
@@ -718,6 +722,7 @@ async function search() {
       windowMode: els.window.value,
       // Like the API's six results: keep searching past the window until found.
       minOptions: 6,
+      language: state.language,
       sourceIds: [state.source.id],
     };
     // Sequential on purpose: concurrent runs would distort each other's timing.

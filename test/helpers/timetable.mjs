@@ -8,36 +8,52 @@ export const start = Date.parse("2026-11-08T08:00:00Z") / 1000;
 export const releaseId = "test-release";
 export const iri = (kind, id) => `https://example.org/${kind}/${id}`;
 
-// Rows of the iRail `stations.arrow` extension, written next to the tables and
-// linked from the manifest's `irail:extensions`.
-async function writeStationExtension(directory, rows) {
-  const columns = {
-    name: [],
-    alternativeFr: [],
-    alternativeNl: [],
-    alternativeDe: [],
-    alternativeEn: [],
-    lat: [],
-    lon: [],
-    avgStopTimes: [],
-    iri: [],
-  };
+// An iRail extension table (`stations.arrow`, `headsigns.arrow`) next to the
+// tables, with the columns it has.
+async function writeExtensionTable(directory, name, columnNames, rows) {
+  const columns = Object.fromEntries(columnNames.map((column) => [column, []]));
   for (const row of rows)
-    for (const column of Object.keys(columns))
-      columns[column].push(row[column] ?? null);
+    for (const column of columnNames) columns[column].push(row[column] ?? null);
   const table = arrow.tableFromArrays(columns);
   const batch = new arrow.RecordBatch(
     new arrow.Schema(table.schema.fields, new Map([["releaseId", releaseId]])),
     table.batches[0].data,
   );
   await writeFile(
-    path.join(directory, "stations.arrow"),
+    path.join(directory, `${name}.arrow`),
     arrow.tableToIPC(new arrow.Table(batch), "file"),
   );
-  await writeFile(
-    path.join(directory, "irail.json"),
-    JSON.stringify({ files: { stations: { path: "stations.arrow" } } }),
-  );
+  return { path: `${name}.arrow` };
+}
+
+// The extensions, linked from the manifest's `irail:extensions` by irail.json.
+async function writeExtensions(directory, { stationRows, headsignRows }) {
+  const files = {};
+  if (stationRows)
+    files.stations = await writeExtensionTable(
+      directory,
+      "stations",
+      [
+        "name",
+        "alternativeFr",
+        "alternativeNl",
+        "alternativeDe",
+        "alternativeEn",
+        "lat",
+        "lon",
+        "avgStopTimes",
+        "iri",
+      ],
+      stationRows,
+    );
+  if (headsignRows)
+    files.headsigns = await writeExtensionTable(
+      directory,
+      "headsigns",
+      ["headsign", "translationNl", "translationDe", "translationEn"],
+      headsignRows,
+    );
+  await writeFile(path.join(directory, "irail.json"), JSON.stringify({ files }));
 }
 
 export async function timetable({
@@ -48,6 +64,7 @@ export async function timetable({
   stopIris,
   tripShortNames = [],
   stationRows,
+  headsignRows,
 } = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), "lc-planner-"));
   const stops = ["Origin", "Interchange", "Destination", "Disconnected"].map(
@@ -119,7 +136,8 @@ export async function timetable({
       arrivalStopSequence: 2,
     },
   ];
-  if (stationRows) await writeStationExtension(directory, stationRows);
+  if (stationRows || headsignRows)
+    await writeExtensions(directory, { stationRows, headsignRows });
   const pages = [];
   await mkdir(path.join(directory, "pages"));
   for (const [i, row] of rows.entries()) {
@@ -171,7 +189,7 @@ export async function timetable({
     routes: "routes.arrow",
     transfers: "transfers.arrow",
     connections: { "@type": "ConnectionCollection", pages },
-    ...(stationRows ? { "irail:extensions": { "@id": "irail.json" } } : {}),
+    ...(stationRows || headsignRows ? { "irail:extensions": { "@id": "irail.json" } } : {}),
     ...extra,
   };
   await writeFile(

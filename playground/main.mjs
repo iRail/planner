@@ -1221,6 +1221,7 @@ el("journey-form").addEventListener("submit", async (event) => {
         : { departureAfter: seconds }),
       maxWalkMeters,
       windowMode,
+      language: stationLanguage,
       sourceIds: activeSources().map((source) => source.id),
     };
     const result = await planner.request("plan", query, onProgress);

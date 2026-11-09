@@ -17,6 +17,7 @@ import {
   validateSchema,
 } from "./lc-timetable.mjs";
 import { buildStations, loadStationRows } from "./irail-stations.mjs";
+import { buildHeadsigns, loadHeadsignRows } from "./irail-headsigns.mjs";
 import { decodeTripUpdates } from "./gtfs-rt.mjs";
 import {
   applyRealtimeToBatches,
@@ -592,6 +593,24 @@ export function createPlanner(
     return directories.get(source);
   }
 
+  // The translations of the headsigns, loaded the same way; without them a
+  // headsign stays as the timetable published it.
+  const headsignTranslations = new WeakMap();
+  function headsignDirectory(source) {
+    if (!headsignTranslations.has(source))
+      headsignTranslations.set(
+        source,
+        loadHeadsignRows(source.manifestUrl, {
+          fetch: fetcher,
+          tableFromIPC,
+          manifest: source.manifest,
+        })
+          .catch(() => null)
+          .then((rows) => buildHeadsigns(rows ?? [])),
+      );
+    return headsignTranslations.get(source);
+  }
+
   return {
     discoverSources,
     loadSource,
@@ -600,6 +619,7 @@ export function createPlanner(
     planIsochrone,
     scanConnections,
     stationDirectory,
+    headsignDirectory,
     refreshRealtime,
     resetRealtime,
     realtimeStop,

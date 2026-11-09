@@ -50,6 +50,12 @@ export interface JourneyQuery {
   sourceIds?: string[];
   windowMode?: "adaptive" | "full";
   /**
+   * `nl`, `fr`, `en` or `de`: show each leg's `headsign` in this language, from
+   * the CDN's headsign translations, and add `headsigns` with all of them.
+   * Without it, headsigns are as the timetable published them.
+   */
+  language?: Language;
+  /**
    * Keep searching later departures, for up to two days, until this many
    * alternatives are found. A single search returns fewer when its window is
    * short. The result then holds exactly this many, or all that exist.
@@ -107,7 +113,10 @@ export interface RideLeg {
   alightCanceled: boolean;
   routeName: string;
   routeType: number;
+  /** The destination the train shows, in the query's `language` when given. */
   headsign: string;
+  /** With a `language` in the query: the headsign in every language, `{ fr, nl, de, en }` (`fr` is the published text; a language without a translation is missing). */
+  headsigns?: Partial<Record<Language, string>>;
   /** The train, like in the iRail API: `{ id: "BE.NMBS.IC502", name: "IC 502", … }`. Pass its `id` and the leg's `serviceDate` to `vehicle()`. */
   vehicle: Vehicle;
   tripIri: string;

@@ -8,6 +8,8 @@
 // IRIs (`.../stops/S8892007`, `.../stops/8892007_3`) and in the API's station
 // ids (`BE.NMBS.008892007`).
 
+import { loadExtensionRows } from "./irail-extensions.mjs";
+
 export const LANGUAGES = ["en", "nl", "fr", "de"];
 const ALTERNATIVE_COLUMNS = {
   fr: "alternativeFr",
@@ -51,40 +53,10 @@ export function normalizeLanguage(value) {
  * `tableFromIPC` is Apache Arrow's, passed in so this module stays dependency-free;
  * pass `manifest` when it is already parsed, to skip fetching it again.
  */
-export async function loadStationRows(
-  manifestUrl,
-  { fetch: fetchFn = globalThis.fetch, tableFromIPC, manifest: loaded } = {},
-) {
-  const json = async (url) => {
-    const response = await fetchFn(url);
-    if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
-    return { data: await response.json(), url: response.url || url };
-  };
-  const { data: manifest, url: manifestBase } = loaded
-    ? { data: loaded, url: manifestUrl }
-    : await json(manifestUrl);
-  const extension = manifest["irail:extensions"]?.["@id"];
-  if (!extension) return null;
-  const { data: info, url: infoUrl } = await json(
-    new URL(extension, manifestBase).href,
-  );
-  const path = info.files?.stations?.path;
-  if (!path) return null;
-  const tableUrl = new URL(path, infoUrl).href;
-  const response = await fetchFn(tableUrl);
-  if (!response.ok) throw new Error(`${tableUrl}: HTTP ${response.status}`);
-  const table = tableFromIPC(new Uint8Array(await response.arrayBuffer()));
-  const releaseId = table.schema.metadata.get("releaseId");
-  if (releaseId && manifest.releaseId && releaseId !== manifest.releaseId)
-    throw new Error("stations.arrow belongs to another release");
-  for (const column of ["name", "iri", ...Object.values(ALTERNATIVE_COLUMNS)])
-    if (!table.getChild(column))
-      throw new Error(`stations.arrow has no ${column} column`);
-  return Array.from({ length: table.numRows }, (_, i) => {
-    const row = {};
-    for (const field of table.schema.fields)
-      row[field.name] = table.getChild(field.name).get(i);
-    return row;
+export function loadStationRows(manifestUrl, options = {}) {
+  return loadExtensionRows(manifestUrl, "stations", {
+    ...options,
+    columns: ["name", "iri", ...Object.values(ALTERNATIVE_COLUMNS)],
   });
 }
 

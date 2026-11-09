@@ -172,8 +172,11 @@ async function makeContext(core, sources, payload = {}) {
     if (!lang)
       throw new IrailApiError(400, "language must be one of nl, fr, en, de");
   }
-  const stations = await core.stationDirectory(source);
-  return { core, source, stations, lang };
+  const [stations, headsigns] = await Promise.all([
+    core.stationDirectory(source),
+    core.headsignDirectory(source),
+  ]);
+  return { core, source, stations, headsigns, lang };
 }
 
 // ---------------------------------------------------------------- stations
@@ -488,7 +491,9 @@ function legView(context, leg, intermediates) {
       leg.alightCanceled ?? false,
     ),
     vehicle: vehicleView(info),
-    direction: info.headsign || null,
+    direction: info.headsign
+      ? context.headsigns.translate(info.headsign, context.lang)
+      : null,
     stops: intermediates.get(leg) ?? [],
     distanceMeters: null,
   };

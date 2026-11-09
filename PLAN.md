@@ -16,7 +16,7 @@ Implemented:
 
 Possible follow-up work:
 
-- Wire up composition, disturbances, occupancy feedback once their data is published (headsign translations from `headsigns.arrow`).
-- `connections` with `arriveBy` and `vehicles` filtering.
+- Wire up composition, disturbances, occupancy feedback once their data is published.
+- `connections` with `vehicles` filtering.
 - Real-time alerts and added trips.
 - Cross-station transfer overrides and pedestrian routing.

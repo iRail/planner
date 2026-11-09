@@ -159,6 +159,7 @@ export function normalizePlannerJourney(journey, { names, ids }) {
             date: (serviceDayInstant(leg.serviceDate) ?? new Date(leg.boardTime * 1000)).getTime(),
             label: leg.vehicle?.name || leg.routeName || "Train",
             headsign: leg.headsign,
+            headsigns: leg.headsigns,
           },
     ),
   };
