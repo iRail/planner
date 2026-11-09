@@ -401,3 +401,49 @@
     animation: none;
   }
 }
+
+/* Canceled journeys: clearly not possible */
+.result-card.is-canceled {
+  border-left: 5px solid var(--accent);
+}
+
+.result-card.is-canceled .connection-times,
+.result-card.is-canceled .connection-meta {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.cancel-banner {
+  display: block;
+  margin-top: .45rem;
+  padding: .4rem .65rem;
+  border-radius: .5rem;
+  background: var(--accent);
+  color: #fff;
+  font-size: .85rem;
+  font-weight: 800;
+}
+
+.canceled-tag {
+  display: inline-block; /* a struck-through parent does not strike it */
+  margin-left: .4rem;
+  padding: 0 .45rem;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: .72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.planner-row.is-canceled .planner-time b,
+.planner-row.is-canceled .planner-station,
+.planner-train.is-canceled {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.is-canceled-cell {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}

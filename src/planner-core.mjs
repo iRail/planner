@@ -196,6 +196,14 @@ export function createPlanner(
     overlaid.clear();
   }
 
+  /** Whether any source's feed cancels a trip or skips a stop right now. */
+  function hasDisruptions(sources) {
+    return sources.some((source) => {
+      const stats = realtime.get(source.id)?.stats;
+      return Boolean(stats && stats.canceled + stats.skipping > 0);
+    });
+  }
+
   /** The overlay's view of one stop of a trip: `{ delay, platform, canceled }` or null. */
   function realtimeStop(source, trip, serviceDate, stopIdx, kind) {
     return stopStatus(realtime.get(source.id), trip, serviceDate, stopIdx, kind);
@@ -223,6 +231,7 @@ export function createPlanner(
     maxWalkMeters,
     onProgress,
     windowMode = "adaptive",
+    includeCanceled = false,
   }) {
     if (
       !Number.isFinite(departureAfter) ||
@@ -235,6 +244,11 @@ export function createPlanner(
       throw new Error("Unknown journey window mode");
     const maximum = departureAfter + 86400;
     let to = maximum;
+    // Canceled trips and skipped stops stay usable in this search, so journeys
+    // that depend on them can be found (and flagged by the caller).
+    const read = includeCanceled
+      ? (job, ...rest) => readPage({ ...job, keepCanceled: true }, ...rest)
+      : readPage;
     const network = ensureNetwork(sources, maxWalkMeters);
     const endpoints = createJourneyEndpoints(
       network,
@@ -276,7 +290,7 @@ export function createPlanner(
       await Promise.all(
         network.sources.map(async (source) => [
           source,
-          await connectionPages(source, departureAfter, maximum, readPage),
+          await connectionPages(source, departureAfter, maximum, read),
         ]),
       ),
     );
@@ -285,7 +299,7 @@ export function createPlanner(
     const queryPages = new Map();
     const load = (job) => {
       if (!queryPages.has(job.url))
-        queryPages.set(job.url, readPage(job, departureAfter, maximum));
+        queryPages.set(job.url, read(job, departureAfter, maximum));
       return queryPages.get(job.url);
     };
     let forward = { scanned: 0, pages: 0, regions: 0, loadMs: 0 };
@@ -579,5 +593,6 @@ export function createPlanner(
     refreshRealtime,
     resetRealtime,
     realtimeStop,
+    hasDisruptions,
   };
 }

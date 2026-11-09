@@ -145,13 +145,44 @@ all see the same network:
 - **Delays** move a connection's departure and arrival. The delay of the last
   stop the feed mentions carries on to the stops after it, a train never leaves
   early, and the pages are re-sorted because delays reorder departures.
-- **Canceled trips** disappear from journey results. Liveboards and `vehicle` still
-  list them, with `canceled: true`.
+- **Canceled trips** cannot be traveled, but they are not hidden: journeys that need
+  one are returned flagged `canceled: true` (see below). Liveboards and `vehicle`
+  list canceled trains with `canceled: true`.
 - **Skipped stops** cannot be boarded or left, but the train still rides through.
 - **Platforms** come from the feed's stop ids (`8892601_1` is platform 1).
 
 The scheduled pages stay untouched in the cache; the overlay is applied to a copy,
 so a feed update costs one small download and no page reloads.
+
+**Canceled journeys.** By default a search also returns the journeys that would
+exist if the canceled trains ran, so a traveller sees "the 08:12 is canceled" rather
+than a gap in the list. Each is flagged and never mixed up with a journey that can be
+traveled:
+
+```js
+const { found, options } = await planner.plan(query);
+for (const journey of options) {
+  if (journey.canceled) {
+    // times are the schedule; the legs say which train
+    const dead = journey.legs.filter((leg) => leg.canceled);
+  }
+}
+```
+
+- `journey.canceled` is true when a train of the journey is canceled or skips a stop it
+  needs (`leg.canceled`, `leg.boardCanceled`, `leg.alightCanceled` say where).
+- `found` means at least one journey **can be traveled**: it is false when all that
+  exist are canceled, even though `options` is not empty. `result.canceledOptions`
+  counts them.
+- Canceled journeys are listed among the others by departure time, never push a
+  possible journey out and never count toward `minOptions`. They are shown as far as
+  the possible journeys reach.
+- `connections()` flags them with `canceled: true` (and `canceled` on the affected
+  leg ends); `limit` counts only connections that can be traveled, the canceled ones
+  come on top.
+- Pass `includeCanceled: false` to `plan()` or `connections()` for only journeys that
+  can be traveled. Searches cost an extra pass while the feed cancels something; this
+  skips it too.
 
 In the iRail calls, a `time` is the scheduled time and `delay` is how late the feed says
 it is, like in the iRail API: the expected time is `time + delay`. In `plan`, the

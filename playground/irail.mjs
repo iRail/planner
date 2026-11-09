@@ -279,10 +279,13 @@ const callPlanner = (query) =>
 
 // ------------------------------------------------------------- rendering
 
+const canceledTag = (canceled) =>
+  canceled ? `<span class="canceled-tag">Canceled</span>` : "";
+
 function stopRow(point, showPlatform = true) {
   return `
-    <div class="planner-row">
-      <span class="planner-time"><b>${formatTime(point.time)}</b>${delayBadge(point.delay)}</span>
+    <div class="planner-row${point.canceled ? " is-canceled" : ""}">
+      <span class="planner-time"><b>${formatTime(point.time)}</b>${delayBadge(point.delay)}${canceledTag(point.canceled)}</span>
       <span class="planner-station"><b>${escapeHtml(point.name)}</b></span>
       <span class="planner-platform">${showPlatform && point.platform ? `<span class="badge">${escapeHtml(point.platform)}</span>` : ""}</span>
     </div>`;
@@ -291,7 +294,7 @@ function stopRow(point, showPlatform = true) {
 function legLine(leg) {
   if (leg.kind === "walk")
     return `<span class="planner-train">Walk${leg.meters ? ` ${Math.round(leg.meters)} m` : ""}</span>`;
-  return `<span class="planner-train">${escapeHtml(leg.label)}${leg.headsign ? ` → ${escapeHtml(leg.headsign)}` : ""}</span>`;
+  return `<span class="planner-train${leg.canceled ? " is-canceled" : ""}">${escapeHtml(leg.label)}${leg.headsign ? ` → ${escapeHtml(leg.headsign)}` : ""}${canceledTag(leg.canceled)}</span>`;
 }
 
 function timeline(journey) {
@@ -327,17 +330,27 @@ const PILL = {
 const cardKey = (side, journey) =>
   `${side}:${journey.departure}:${journey.arrival}`;
 
+/** Which trains make a journey impossible. */
+function cancellationReason(journey) {
+  const trains = journey.legs
+    .filter((leg) => leg.canceled)
+    .map((leg) => `${leg.label || "train"} ${leg.from.name} → ${leg.to.name}`);
+  return trains.length
+    ? `Not possible: ${trains.join(" and ")} ${trains.length > 1 ? "are" : "is"} canceled`
+    : "Not possible: canceled";
+}
+
 function journeyCard(journey, row, open, side) {
   const late = lateMinutes(journey.delay) || lateMinutes(journey.arrivalDelay);
   return `
-    <article class="result-card is-${row.status}${open ? " is-open" : ""}" data-key="${cardKey(side, journey)}">
+    <article class="result-card is-${row.status}${journey.canceled ? " is-canceled" : ""}${open ? " is-open" : ""}" data-key="${cardKey(side, journey)}">
       <button class="connection-summary" type="button" data-toggle-panel>
         <span>
           <span class="connection-times">
             ${late || journey.canceled ? `<span class="delay-route">!</span>` : ""}
             <span>${formatTime(journey.departure)}</span>${delayBadge(journey.delay)}<span>-&gt;</span><span>${formatTime(journey.arrival)}</span>${delayBadge(journey.arrivalDelay)}
-            ${journey.canceled ? `<span class="delay">canceled</span>` : ""}
           </span>
+          ${journey.canceled ? `<span class="cancel-banner" role="alert">${escapeHtml(cancellationReason(journey))}</span>` : ""}
           <span class="connection-meta">
             <span>${formatDuration(journey.arrival - journey.departure)}</span>
             <span>${transfersLabel(journey.transfers)}</span>
@@ -370,9 +383,9 @@ function column(kind, title, subtitle, side, rows, error, openKeys) {
 }
 
 function journeyCell(journey) {
-  return journey
-    ? `${formatTime(journey.departure)} → ${formatTime(journey.arrival)}<span class="cell-note">${formatDuration(journey.arrival - journey.departure)} · ${transfersLabel(journey.transfers)}</span>`
-    : `<span class="absent">–</span>`;
+  if (!journey) return `<span class="absent">–</span>`;
+  const times = `${formatTime(journey.departure)} → ${formatTime(journey.arrival)}`;
+  return `${journey.canceled ? `<span class="is-canceled-cell">${times}</span>${canceledTag(true)}` : times}<span class="cell-note">${formatDuration(journey.arrival - journey.departure)} · ${transfersLabel(journey.transfers)}</span>`;
 }
 
 function verdictHtml(summary, api, planner) {

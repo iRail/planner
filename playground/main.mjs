@@ -235,20 +235,23 @@ const delayBadge = (seconds) =>
 const platformBadge = (platform) =>
   platform ? `<span class="platform">${escapeHtml(platform)}</span>` : "";
 
+const canceledTag = (canceled) =>
+  canceled ? `<span class="canceled-tag">Canceled</span>` : "";
+
 function renderLeg(source, leg) {
   const routeName = leg.routeName;
   const headsign = leg.headsign;
 
   const div = document.createElement("div");
-  div.className = "leg";
+  div.className = `leg${leg.canceled ? " canceled" : ""}`;
   div.innerHTML = `
 <div class="row">
   <span class="stop">${escapeHtml(source.stops.name[leg.boardStop] || source.stops.id[leg.boardStop])}</span>
-  <span class="time">${formatTime(leg.boardTime)}${delayBadge(leg.boardDelay)}${platformBadge(leg.boardPlatform)}</span>
+  <span class="time">${formatTime(leg.boardTime)}${delayBadge(leg.boardDelay)}${platformBadge(leg.boardPlatform)}${canceledTag(leg.boardCanceled)}</span>
 </div>
 <div class="row">
   <span class="stop">${escapeHtml(source.stops.name[leg.alightStop] || source.stops.id[leg.alightStop])}</span>
-  <span class="time">${formatTime(leg.alightTime)}${delayBadge(leg.alightDelay)}${platformBadge(leg.alightPlatform)}</span>
+  <span class="time">${formatTime(leg.alightTime)}${delayBadge(leg.alightDelay)}${platformBadge(leg.alightPlatform)}${canceledTag(leg.alightCanceled)}</span>
 </div>
 <div class="trip">${escapeHtml(source.name)} · ${routeName ? escapeHtml(routeName) + " · " : ""}${escapeHtml(headsign || "")}</div>
     `;
@@ -266,9 +269,21 @@ function optionHeader(index, startTime, endTime, transfers) {
   return header;
 }
 
+/** Which trains make a journey impossible, for the banner on its card. */
+function cancellationReason(option) {
+  const trains = option.legs
+    .filter((leg) => leg.canceled)
+    .map((leg) => {
+      const source = findSource(leg.sourceId);
+      const name = (stop) => source.stops.name[stop] || source.stops.id[stop];
+      return `${leg.routeName || "train"} ${name(leg.boardStop)} → ${name(leg.alightStop)}`;
+    });
+  return `Not possible: ${trains.join(" and ")} ${trains.length > 1 ? "are" : "is"} canceled`;
+}
+
 function renderOption(option, index) {
   const card = document.createElement("div");
-  card.className = "option";
+  card.className = `option${option.canceled ? " canceled" : ""}`;
   if (!option.legs.length) {
     card.textContent = "Origin and destination are the same point.";
     return card;
@@ -276,6 +291,13 @@ function renderOption(option, index) {
   card.appendChild(
     optionHeader(index, option.departure, option.arrival, option.transfers),
   );
+  if (option.canceled) {
+    const banner = document.createElement("div");
+    banner.className = "cancel-banner";
+    banner.setAttribute("role", "alert");
+    banner.textContent = cancellationReason(option);
+    card.appendChild(banner);
+  }
   let previousArrival;
   for (const leg of option.legs) {
     if (previousArrival !== undefined && leg.boardTime > previousArrival) {
@@ -312,19 +334,29 @@ function renderOption(option, index) {
 function renderResults(result, { refresh = false } = {}) {
   const results = el("results");
   results.innerHTML = "";
-  if (!result.found) {
+  if (!result.options.length) {
     results.textContent =
       "No journey found within 24 hours across the selected networks.";
     return;
   }
+  if (!result.found) {
+    const notice = document.createElement("div");
+    notice.className = "cancel-banner";
+    notice.setAttribute("role", "alert");
+    notice.textContent =
+      "No journey is possible: every journey found uses a canceled train.";
+    results.appendChild(notice);
+  }
   for (const [index, option] of result.options.entries())
     results.appendChild(renderOption(option, index));
   if (result.options.length) {
+    // Show on the map the first journey that can be traveled.
+    const firstPossible = result.options.findIndex((option) => !option.canceled);
     const index = refresh
       ? Math.min(state.selected, result.options.length - 1)
-      : 0;
+      : Math.max(0, firstPossible);
     state.selected = index;
-    results.children[index].setAttribute("aria-current", "true");
+    results.querySelectorAll(".option")[index].setAttribute("aria-current", "true");
     showJourney(result.options[index], !refresh);
   }
 }
@@ -1155,7 +1187,11 @@ el("journey-form").addEventListener("submit", async (event) => {
 
     if (revision !== journeyRevision) return;
     const elapsed = Math.round(performance.now() - startedAt);
-    const shown = result.options.length;
+    const canceledCount = result.options.filter((option) => option.canceled).length;
+    const shown = result.options.length - canceledCount;
+    const canceledNote = canceledCount
+      ? `, plus ${canceledCount} canceled (not possible)`
+      : "";
     const hiddenNote =
       result.totalOptions > shown
         ? ` (showing the first ${shown} of ${result.totalOptions} Pareto-optimal alternatives)`
@@ -1166,8 +1202,10 @@ el("journey-form").addEventListener("submit", async (event) => {
         : "";
     setStatus(
       result.found
-        ? `Found ${shown} journey option${shown === 1 ? "" : "s"}${hiddenNote} across the selected networks, scanning ${result.scanned.toLocaleString()} connections in ${elapsed} ms.${windowNote}`
-        : `No journey found across the selected networks after scanning ${result.scanned.toLocaleString()} connections in ${elapsed} ms.`,
+        ? `Found ${shown} journey option${shown === 1 ? "" : "s"}${canceledNote}${hiddenNote} across the selected networks, scanning ${result.scanned.toLocaleString()} connections in ${elapsed} ms.${windowNote}`
+        : canceledCount
+          ? `No journey is possible: ${canceledCount} found, all canceled.`
+          : `No journey found across the selected networks after scanning ${result.scanned.toLocaleString()} connections in ${elapsed} ms.`,
       !result.found,
     );
     renderResults(result);

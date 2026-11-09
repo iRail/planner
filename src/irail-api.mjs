@@ -383,12 +383,12 @@ function walkEnd(context, ref, time) {
 }
 
 // `time` is the expected time; the scheduled time is `delay` earlier.
-const rideEnd = (context, stopIdx, time, delay, platform) => ({
+const rideEnd = (context, stopIdx, time, delay, platform, canceled) => ({
   station: placeOf(context, stopIdx),
   time: at(time - delay),
   platform,
   delay,
-  canceled: false,
+  canceled,
 });
 
 /** Stops between the ends of each ride leg, read from the trip's connections. */
@@ -464,6 +464,7 @@ function legView(context, leg, intermediates) {
       leg.boardTime,
       leg.boardDelay ?? 0,
       leg.boardPlatform ?? null,
+      leg.boardCanceled ?? false,
     ),
     to: rideEnd(
       context,
@@ -471,6 +472,7 @@ function legView(context, leg, intermediates) {
       leg.alightTime,
       leg.alightDelay ?? 0,
       leg.alightPlatform ?? null,
+      leg.alightCanceled ?? false,
     ),
     vehicle: vehicleView(info),
     direction: info.headsign || null,
@@ -513,11 +515,17 @@ async function connections(core, sources, payload, now, plan) {
       maxWalkMeters: payload.maxWalkMeters ?? 0,
       windowMode: "adaptive",
       minOptions: wanted,
+      includeCanceled: payload.includeCanceled,
       sourceIds: [context.source.id],
     },
     [context.source],
   );
-  const journeys = result.options.slice(0, wanted);
+  // `limit` counts journeys that can be traveled; the canceled ones among them
+  // come on top, so a canceled train never costs a possible journey its place.
+  let possible = 0;
+  const journeys = result.options.filter(
+    (option) => option.canceled || ++possible <= wanted,
+  );
   const intermediates = await intermediateStops(context, journeys);
   return journeys.map((journey) => {
     // Journey times are scheduled; the delays are those of the first and the
@@ -533,6 +541,7 @@ async function connections(core, sources, payload, now, plan) {
       arrival: at(arrival),
       arrivalDelay,
       duration: arrival - departure,
+      canceled: journey.canceled === true,
       transfers: journey.transfers,
       legs: journey.legs.map((leg) => legView(context, leg, intermediates)),
     };

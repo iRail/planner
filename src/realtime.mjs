@@ -90,7 +90,14 @@ export function buildRealtime(source, feeds) {
   const tripIndex = tripIndexOf(source);
   const stopIndex = stopIndexOf(source);
   const trips = new Map();
-  const stats = { updates: 0, matched: 0, unmatched: 0, canceled: 0, delayed: 0 };
+  const stats = {
+    updates: 0,
+    matched: 0,
+    unmatched: 0,
+    canceled: 0,
+    skipping: 0,
+    delayed: 0,
+  };
   let timestamp = 0;
   let maxDelay = 0;
   for (const { feed, decoded } of feeds) {
@@ -152,6 +159,8 @@ export function buildRealtime(source, feeds) {
       stats.matched += 1;
       if (canceled) stats.canceled += 1;
       else if (late || (update.delay ?? 0) > 0) stats.delayed += 1;
+      if (!canceled && [...stops.values()].some((stop) => stop.skipped))
+        stats.skipping += 1;
     }
   }
   return {
@@ -262,13 +271,15 @@ export function applyRealtime(batch, realtime, { keepCanceled = false } = {}) {
     trip.resolved.set(to * 2 + 1, arrDelay[row]);
     const first = trip.stops.get(from);
     const last = trip.stops.get(to);
+    // Skipped stops are closed to passengers, unless the caller keeps
+    // disrupted service in view: then the flags say it and nothing is closed.
     if (first?.skipped) {
       flags[row] |= DEPARTURE_SKIPPED;
-      pickup[row] = 1;
+      if (!keepCanceled) pickup[row] = 1;
     }
     if (last?.skipped) {
       flags[row] |= ARRIVAL_SKIPPED;
-      dropOff[row] = 1;
+      if (!keepCanceled) dropOff[row] = 1;
     }
     depPlatform[row] = first?.platform;
     arrPlatform[row] = last?.platform;

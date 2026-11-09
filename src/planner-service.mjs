@@ -9,17 +9,70 @@ export function createPlannerService(planner) {
   let sources = [];
   const irail = createIrailApi(planner);
 
+  // Route and stop identifiers, real-time delays and platforms on every ride
+  // leg, and whether the leg can be used: a ride is canceled when its trip is,
+  // and either end is when the stop is skipped. Times are already real-time
+  // adjusted; the delays say by how much.
+  function label(result, selected) {
+    for (const option of result.options) {
+      for (const leg of option.legs) {
+        if (leg.kind !== "ride") continue;
+        const source = selected.find((source) => source.id === leg.sourceId);
+        const trip = source.tables.trips.get(leg.trip);
+        const route = source.tables.routes.get(trip.routeIdx);
+        const board = planner.realtimeStop?.(
+          source,
+          leg.trip,
+          leg.serviceDate,
+          leg.boardStop,
+          "dep",
+        );
+        const alight = planner.realtimeStop?.(
+          source,
+          leg.trip,
+          leg.serviceDate,
+          leg.alightStop,
+          "arr",
+        );
+        Object.assign(leg, {
+          boardDelay: board?.delay ?? 0,
+          alightDelay: alight?.delay ?? 0,
+          boardPlatform: board?.platform ?? null,
+          alightPlatform: alight?.platform ?? null,
+          boardCanceled: board?.canceled ?? false,
+          alightCanceled: alight?.canceled ?? false,
+          canceled: Boolean(board?.canceled || alight?.canceled),
+          routeName: route.shortName || route.longName || "",
+          routeType: route.routeType,
+          headsign: trip.headsign || "",
+          tripIri: trip.iri,
+          routeIri: route.iri,
+          boardStopIri: source.stops.iri[leg.boardStop],
+          alightStopIri: source.stops.iri[leg.alightStop],
+        });
+      }
+      option.canceled = option.legs.some((leg) => leg.canceled);
+    }
+    return result;
+  }
+
   // Journeys with route and stop identifiers resolved. With `minOptions`, a
   // search that found fewer alternatives continues after the last departure
   // until enough are found or nothing more departs within two days.
+  //
+  // Journeys that cannot be traveled because a train is canceled (or skips the
+  // stop they need) are returned too, unless `includeCanceled` is false: each
+  // flagged `canceled: true`, among the others by departure time. They never
+  // count toward `minOptions` or `found`, and never push a possible journey out.
   async function planLabeled(payload, selected, onProgress) {
-    const { minOptions = 0, ...query } = payload;
-    const search = (departureAfter) =>
+    const { minOptions = 0, includeCanceled = true, ...query } = payload;
+    const search = (departureAfter, extra) =>
       planner.planJourneys({
         ...query,
         departureAfter,
         sources: selected,
         onProgress,
+        ...extra,
       });
     let result = await search(query.departureAfter);
     let extended = false;
@@ -50,42 +103,24 @@ export function createPlannerService(planner) {
     if (result.options.length > minOptions && minOptions > 0 && extended)
       result = { ...result, options: result.options.slice(0, minOptions) };
     onProgress?.({ phase: "labels" });
-    for (const option of result.options)
-      for (const leg of option.legs) {
-        if (leg.kind !== "ride") continue;
-        const source = selected.find((source) => source.id === leg.sourceId);
-        const trip = source.tables.trips.get(leg.trip);
-        const route = source.tables.routes.get(trip.routeIdx);
-        // Times are already real-time adjusted; these say by how much, and
-        // where the feed names a platform.
-        const board = planner.realtimeStop?.(
-          source,
-          leg.trip,
-          leg.serviceDate,
-          leg.boardStop,
-          "dep",
-        );
-        const alight = planner.realtimeStop?.(
-          source,
-          leg.trip,
-          leg.serviceDate,
-          leg.alightStop,
-          "arr",
-        );
-        Object.assign(leg, {
-          boardDelay: board?.delay ?? 0,
-          alightDelay: alight?.delay ?? 0,
-          boardPlatform: board?.platform ?? null,
-          alightPlatform: alight?.platform ?? null,
-          routeName: route.shortName || route.longName || "",
-          routeType: route.routeType,
-          headsign: trip.headsign || "",
-          tripIri: trip.iri,
-          routeIri: route.iri,
-          boardStopIri: source.stops.iri[leg.boardStop],
-          alightStopIri: source.stops.iri[leg.alightStop],
-        });
-      }
+    label(result, selected);
+    result.canceledOptions = 0;
+    if (includeCanceled && planner.hasDisruptions?.(selected)) {
+      // The same search with canceled trains left in. Only what depends on them
+      // is new; it is shown as far as the possible journeys reach.
+      const withCanceled = label(
+        await search(query.departureAfter, { includeCanceled: true, onProgress: undefined }),
+        selected,
+      );
+      const reach = result.options.at(-1)?.departure ?? Infinity;
+      const impossible = withCanceled.options.filter(
+        (option) => option.canceled && option.departure <= reach,
+      );
+      result.options = [...result.options, ...impossible].sort(
+        (a, b) => a.departure - b.departure || a.arrival - b.arrival,
+      );
+      result.canceledOptions = impossible.length;
+    }
     return result;
   }
 

@@ -443,7 +443,9 @@ const connections = await planner.connections({
           an earlier call. A <code>time</code> is the scheduled time and
           <code>delay</code> (seconds) how late the real-time feed says it is;
           <code>canceled</code> and <code>platform</code> come from the feed too
-          (<code>null</code> without one).
+          (<code>null</code> without one). Journeys that need a canceled train
+          are returned flagged <code>canceled: true</code> (pass
+          <code>includeCanceled: false</code> to leave them out).
           <code>connections</code> does not support
           <code>arriveBy: true</code> or <code>vehicles</code> other than
           <code>all</code> yet. Errors are <code>IrailApiError</code>s with the

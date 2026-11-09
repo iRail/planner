@@ -288,6 +288,23 @@ test("a delay one side does not know about is called out, an agreed delay is not
   assert.deepEqual(notes(0, 120), ["arrival delay differs: iRail +0 min, planner +2 min"]);
   assert.deepEqual(notes(300, 310), ["5 min late in realtime"], "within the same minute: agreed");
   assert.deepEqual(notes(0, 0), []);
+  // Arriving early is not a delay, and is never shown as "+-1".
+  assert.deepEqual(notes(-60, 0), []);
+  assert.deepEqual(notes(300, -120), ["arrival delay differs: iRail +5 min, planner +0 min"]);
+});
+
+test("a canceled planner journey is not an earliest arrival and cannot make another redundant", () => {
+  const canceledFast = j(100, 300, 0, { canceled: true });
+  const slow = j(100, 900);
+  const { summary, rows } = compareJourneys([j(100, 900), j(120, 950)], [canceledFast, slow]);
+  assert.equal(summary.plannerEarliestArrival, 900, "the canceled 300 does not count");
+  assert.equal(summary.sameEarliestArrival, true);
+  const canceledRow = rows.find((r) => r.planner === canceledFast);
+  assert.deepEqual(canceledRow.notes.filter((n) => /cancel/.test(n)), ["canceled in the planner's feed"]);
+  // A canceled iRail journey is "canceled", never "slower than another".
+  const apiCanceled = j(100, 950, 0, { canceled: true });
+  const { rows: rows2 } = compareJourneys([j(100, 900), apiCanceled], []);
+  assert.equal(rows2.find((r) => r.api === apiCanceled).status, "only-api");
 });
 
 test("planner journeys are compared by their scheduled times, with delays beside them", () => {

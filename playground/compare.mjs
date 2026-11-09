@@ -59,16 +59,20 @@ export function normalizeApiConnection(connection) {
     name: name || info?.name || "",
     time: seconds(stop.time),
     delay: seconds(stop.delay),
+    canceled: Number(stop.canceled) > 0,
     platform: stop.platform && stop.platform !== "?" ? stop.platform : undefined,
   });
   const legs = [];
   let start = { stop: departure, name: departure.station, info: departure.stationinfo };
   const finish = (end) => {
     const walking = Number(start.stop.walking) === 1;
+    const from = point(start.stop, start.name, start.info);
+    const to = point(end.stop, end.name, end.info);
     legs.push({
       kind: walking ? "walk" : "ride",
-      from: point(start.stop, start.name, start.info),
-      to: point(end.stop, end.name, end.info),
+      from,
+      to,
+      canceled: from.canceled || to.canceled,
       label: walking
         ? "Walk"
         : start.stop.vehicleinfo?.shortname ||
@@ -118,7 +122,7 @@ export function normalizePlannerJourney(journey, { names, ids }) {
     transfers: journey.transfers,
     delay: departureDelay,
     arrivalDelay,
-    canceled: false,
+    canceled: Boolean(journey.canceled),
     legs: journey.legs.map((leg) =>
       leg.kind === "walk"
         ? {
@@ -130,11 +134,13 @@ export function normalizePlannerJourney(journey, { names, ids }) {
           }
         : {
             kind: "ride",
+            canceled: Boolean(leg.canceled),
             from: {
               key: stationKey(leg.boardStopIri),
               name: names[leg.boardStop] || leg.boardStopIri,
               time: leg.boardTime - (leg.boardDelay ?? 0),
               delay: leg.boardDelay ?? 0,
+              canceled: Boolean(leg.boardCanceled),
               platform: leg.boardPlatform ?? undefined,
             },
             to: {
@@ -142,6 +148,7 @@ export function normalizePlannerJourney(journey, { names, ids }) {
               name: names[leg.alightStop] || leg.alightStopIri,
               time: leg.alightTime - (leg.alightDelay ?? 0),
               delay: leg.alightDelay ?? 0,
+              canceled: Boolean(leg.alightCanceled),
               platform: leg.alightPlatform ?? undefined,
             },
             label: leg.routeName || "Train",
@@ -207,9 +214,15 @@ export function compareJourneys(
         notes.push(
           `same times, other transfer stations (iRail: ${transfersOnlyIn(api, planner)}; planner: ${transfersOnlyIn(planner, api)})`,
         );
-      const apiLate = Math.round((api.arrivalDelay || 0) / 60);
-      const plannerLate = Math.round((planner.arrivalDelay || 0) / 60);
-      if (api.canceled) notes.push("canceled in realtime");
+      // Only lateness is reported; arriving a minute early is not a delay.
+      const late = (seconds) => Math.max(0, Math.round((seconds || 0) / 60));
+      const apiLate = late(api.arrivalDelay);
+      const plannerLate = late(planner.arrivalDelay);
+      if (api.canceled && planner.canceled)
+        notes.push("canceled in both realtime sources");
+      else if (api.canceled) notes.push("canceled in iRail's realtime data only");
+      else if (planner.canceled)
+        notes.push("canceled in the planner's feed only");
       else if (apiLate !== plannerLate)
         notes.push(
           `arrival delay differs: iRail +${apiLate} min, planner +${plannerLate} min`,
@@ -235,7 +248,13 @@ export function compareJourneys(
     });
   }
   for (const api of apiLeft) {
-    const better = apiJourneys.find((other) => other !== api && dominates(other, api));
+    // A canceled journey is not "slower": it is not possible at all, and a
+    // canceled journey cannot make another one redundant.
+    const better =
+      !api.canceled &&
+      apiJourneys.find(
+        (other) => other !== api && !other.canceled && dominates(other, api),
+      );
     if (better)
       rows.push({
         status: "dominated",
@@ -265,7 +284,10 @@ export function compareJourneys(
     rows.push({
       status: outside ? "outside" : "only-planner",
       planner,
-      notes: outside ? ["outside the departures iRail returned"] : [],
+      notes: [
+        ...(outside ? ["outside the departures iRail returned"] : []),
+        ...(planner.canceled ? ["canceled in the planner's feed"] : []),
+      ],
     });
   }
   rows.sort(
@@ -277,7 +299,7 @@ export function compareJourneys(
   const earliest = (list) =>
     list.length ? Math.min(...list.map((j) => j.arrival)) : undefined;
   const apiBest = earliest(apiJourneys.filter((j) => !j.canceled));
-  const plannerBest = earliest(plannerJourneys);
+  const plannerBest = earliest(plannerJourneys.filter((j) => !j.canceled));
   return {
     rows,
     summary: {

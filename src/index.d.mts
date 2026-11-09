@@ -43,8 +43,15 @@ export interface JourneyQuery {
    * Keep searching later departures, for up to two days, until this many
    * alternatives are found. A single search returns fewer when its window is
    * short. The result then holds exactly this many, or all that exist.
+   * Canceled journeys (see `includeCanceled`) do not count.
    */
   minOptions?: number;
+  /**
+   * Also return journeys that cannot be traveled because a train is canceled
+   * (or skips a stop they need), each flagged `canceled: true`. Default true;
+   * pass false to get only journeys that can be traveled.
+   */
+  includeCanceled?: boolean;
 }
 export interface IsochroneQuery {
   origin: Point;
@@ -83,6 +90,11 @@ export interface RideLeg {
   /** Platform from the real-time feed, `null` when it does not name one. */
   boardPlatform: string | null;
   alightPlatform: string | null;
+  /** The train is canceled, or skips the board or alight stop. */
+  canceled: boolean;
+  /** The board / alight stop in particular is canceled or skipped. */
+  boardCanceled: boolean;
+  alightCanceled: boolean;
   routeName: string;
   routeType: number;
   headsign: string;
@@ -109,11 +121,20 @@ export interface Journey {
    * legs, one ride) is not a transfer, so this can be less than `legs.length - 1`.
    */
   transfers: number;
+  /**
+   * True when a train of this journey is canceled (or skips a stop it needs):
+   * the journey cannot be traveled. Times are the schedule then.
+   */
+  canceled: boolean;
   legs: (RideLeg | WalkLeg)[];
 }
 export interface JourneyResult {
+  /** At least one journey can be traveled. False when all that exist are canceled. */
   found: boolean;
+  /** By departure time. Canceled journeys are among them, flagged. */
   options: Journey[];
+  /** How many of `options` are canceled. */
+  canceledOptions: number;
   totalOptions: number;
   scanned: number;
   window: {
@@ -252,6 +273,11 @@ export interface ConnectionsQuery extends IrailQuery {
   arriveBy?: boolean;
   /** `all` is supported; `trains` and `domestic-trains` are not yet. */
   vehicles?: "all" | "trains" | "domestic-trains";
+  /**
+   * Also list connections that cannot be traveled because a train is canceled,
+   * flagged `canceled: true`; they come on top of `limit`. Default true.
+   */
+  includeCanceled?: boolean;
 }
 export interface LegEnd {
   station: Station;
@@ -299,6 +325,8 @@ export interface Connection {
   arrivalDelay: number;
   /** Scheduled duration, in seconds. */
   duration: number;
+  /** A train of this connection is canceled (or skips a stop it needs): it cannot be traveled. */
+  canceled: boolean;
   /** Changes of train; staying seated while a train splits or joins is not one. */
   transfers: number;
   legs: ConnectionLeg[];

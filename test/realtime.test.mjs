@@ -358,6 +358,96 @@ test("a skipped stop cannot be used to get on or off, but the train rides throug
   assert.equal(through.transfers, 0);
 });
 
+test("canceled journeys are returned, flagged, and make no journey possible", async (t) => {
+  const { planner } = await setup(t, {
+    feed: { trips: [trip(0, { relationship: "canceled" })] },
+  });
+  const result = await journeys(planner, 0, 1);
+  assert.equal(result.found, false, "found means a journey can be traveled");
+  assert.equal(result.canceledOptions, 1);
+  assert.equal(result.options.length, 1);
+  const [option] = result.options;
+  assert.equal(option.canceled, true);
+  assert.equal(option.arrival, start + 600, "the schedule, since the train does not run");
+  const [leg] = option.legs;
+  assert.deepEqual(
+    [leg.canceled, leg.boardCanceled, leg.alightCanceled, leg.boardDelay],
+    [true, true, true, 0],
+  );
+  // Opting out gives the old answer: nothing.
+  const strict = await planner.plan({
+    origin: { sourceId: "default", stopIdx: 0 },
+    destination: { sourceId: "default", stopIdx: 1 },
+    departureAfter: start,
+    windowMode: "full",
+    includeCanceled: false,
+  });
+  assert.deepEqual([strict.found, strict.options.length], [false, 0]);
+});
+
+test("canceled journeys sit among the possible ones by departure and never replace them", async (t) => {
+  const { planner } = await setup(t, {
+    feed: { trips: [trip(0, { relationship: "canceled" })] },
+  });
+  const result = await planner.plan({
+    origin: { sourceId: "default", stopIdx: 0 },
+    destination: { sourceId: "default", stopIdx: 2 },
+    departureAfter: start,
+    windowMode: "full",
+    minOptions: 2,
+  });
+  assert.equal(result.found, true);
+  assert.deepEqual(
+    result.options.map((o) => [o.departure - start, o.canceled]),
+    [
+      [0, true], // trip 0 then trip 0 again: canceled
+      [300, false],
+      [1800, false],
+    ],
+  );
+  assert.equal(result.options.filter((o) => !o.canceled).length, 2, "minOptions counts possible journeys");
+  assert.equal(result.canceledOptions, 1);
+});
+
+test("a canceled journey that departs after the last possible one is left out", async (t) => {
+  const { planner } = await setup(t, {
+    feed: { trips: [trip(2, { relationship: "canceled" })] },
+  });
+  const result = await planner.plan({
+    origin: { sourceId: "default", stopIdx: 0 },
+    destination: { sourceId: "default", stopIdx: 2 },
+    departureAfter: start,
+    windowMode: "full",
+    minOptions: 2,
+  });
+  assert.equal(result.options.every((o) => !o.canceled), true);
+  assert.equal(result.canceledOptions, 0);
+});
+
+test("a journey that needs a skipped stop is flagged, one that rides through is not", async (t) => {
+  const { planner } = await setup(t, {
+    feed: {
+      trips: [trip(0, { stops: [{ stopId: INTERCHANGE, relationship: "skipped" }] })],
+    },
+  });
+  const [stopsHere] = (await journeys(planner, 0, 1)).options;
+  assert.equal(stopsHere.canceled, true);
+  assert.deepEqual(
+    [stopsHere.legs[0].boardCanceled, stopsHere.legs[0].alightCanceled],
+    [false, true],
+    "only the skipped end is canceled",
+  );
+  const through = (await journeys(planner, 0, 2)).options.find((o) => o.arrival === start + 1300);
+  assert.equal(through.canceled, false);
+});
+
+test("without disruptions nothing is flagged and no extra search is made", async (t) => {
+  const { planner } = await setup(t, { feed: { trips: [lateTrip(300)] } });
+  const result = await journeys(planner, 0, 2);
+  assert.equal(result.canceledOptions, 0);
+  assert.equal(result.options.every((o) => o.canceled === false), true);
+});
+
 test("updates for trips the timetable does not know are counted and ignored", async (t) => {
   const { planner } = await setup(t, {
     feed: {
@@ -467,6 +557,33 @@ test("connections report scheduled times with the delays of the trains", async (
   assert.equal(leg.from.platform, "2");
   assert.deepEqual(leg.from.time, at(0));
   assert.equal(leg.to.delay, 300);
+});
+
+test("connections list canceled journeys on top of the requested number of possible ones", async (t) => {
+  const { planner } = await setup(t, {
+    feed: { trips: [trip(0, { relationship: "canceled" })] },
+  });
+  const all = await planner.connections({ from: "Origin", to: "Destination", time: nine, limit: 1 });
+  assert.deepEqual(
+    all.map((c) => [c.departure, c.canceled]),
+    [
+      [at(0), true],
+      [at(300), false],
+    ],
+    "one possible journey, as asked, plus the canceled one",
+  );
+  const [canceled] = all;
+  assert.equal(canceled.legs.every((leg) => leg.from.canceled && leg.to.canceled), true);
+  assert.equal(all[1].legs[0].from.canceled, false);
+
+  const only = await planner.connections({
+    from: "Origin",
+    to: "Destination",
+    time: nine,
+    limit: 1,
+    includeCanceled: false,
+  });
+  assert.deepEqual(only.map((c) => c.canceled), [false]);
 });
 
 // ---------------------------------------------------------------- refreshing

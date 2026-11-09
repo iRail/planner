@@ -605,3 +605,39 @@ td {
     animation: none;
   }
 }
+
+/* Canceled journeys: clearly not possible */
+.option.canceled {
+  border-color: var(--danger);
+  border-left-width: 5px;
+}
+.option.canceled .option-duration,
+.option.canceled .leg.canceled .time,
+.option.canceled .leg.canceled .row .stop {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+.cancel-banner {
+  margin: 8px 0 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+.canceled-tag {
+  display: inline-block; /* a struck-through parent does not strike it */
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  text-decoration: none;
+}
+.leg.canceled {
+  border: 1px solid var(--danger);
+}
