@@ -222,12 +222,108 @@ export function stationQueryRegex(query) {
   }
 }
 
+// ----- fuzzy matching: typos and missing or swapped letters -----
+
+/**
+ * The edit distance (insert, delete, replace, swap of two neighbours) between
+ * two strings, or `max + 1` when it exceeds `max`. Gives up early, so it is
+ * cheap to run against every station name.
+ */
+export function editDistance(a, b, max = Infinity) {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let beforePrevious;
+  let previous = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i += 1) {
+    const row = [i];
+    let smallest = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      let cost = Math.min(
+        previous[j] + 1,
+        row[j - 1] + 1,
+        previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+      if (
+        i > 1 &&
+        j > 1 &&
+        a[i - 1] === b[j - 2] &&
+        a[i - 2] === b[j - 1]
+      )
+        cost = Math.min(cost, beforePrevious[j - 2] + 1);
+      row.push(cost);
+      smallest = Math.min(smallest, cost);
+    }
+    if (smallest > max) return max + 1;
+    beforePrevious = previous;
+    previous = row;
+  }
+  return Math.min(previous[b.length], max + 1);
+}
+
+/** What typed text may differ by: nothing for 1-3 letters, 1 edit up to 6, then 2. */
+const allowedEdits = (length) => (length < 4 ? 0 : length < 7 ? 1 : 2);
+
+const fuzzyText = (value) =>
+  normalizeStationText(String(value ?? ""))
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+
+/**
+ * How many edits the typed text is away from the closest part of a station
+ * name: the whole name, one of its words, or its start (so text that is still
+ * being typed, "Antwerpn", still finds "Antwerpen"). `Infinity` when further
+ * away than the text may differ by.
+ */
+function nameDistance(forms, text) {
+  const max = allowedEdits(text.length);
+  if (!max) return Infinity;
+  const oneWord = !text.includes(" ");
+  let best = max + 1;
+  for (const form of forms) {
+    const name = form.toLowerCase();
+    const candidates = [name];
+    if (oneWord) candidates.push(...name.split(" "));
+    if (name.length > text.length)
+      for (const length of [text.length - 1, text.length, text.length + 1])
+        candidates.push(name.slice(0, length));
+    for (const candidate of candidates)
+      best = Math.min(best, editDistance(text, candidate, best - 1));
+  }
+  return best <= max ? best : Infinity;
+}
+
+/**
+ * Stations whose name is close to the typed text, but does not contain it:
+ * `[{ station, distance }]`, busiest station (`avgStopTimes`) first, then the
+ * closest. Names are compared in every language, ignoring case and accents.
+ */
+export function fuzzyStations(stations, query) {
+  const text = fuzzyText(query);
+  if (text.length < 4) return [];
+  const matches = [];
+  for (const station of stations) {
+    const distance = nameDistance(
+      station.searchNames.flat().map(fuzzyText),
+      text,
+    );
+    if (distance !== Infinity) matches.push({ station, distance });
+  }
+  return matches.sort(
+    (a, b) =>
+      b.station.avgStopTimes - a.station.avgStopTimes ||
+      a.distance - b.distance ||
+      a.station.name.localeCompare(b.station.name),
+  );
+}
+
 /**
  * Stations matching the text typed in any language, best first: exact match,
  * then word prefix, prefix, and partial matches; within a rank the most
- * frequently served station (`avgStopTimes`) comes first.
+ * frequently served station (`avgStopTimes`) comes first. Unless `fuzzy` is
+ * false, spaces left in the list are filled with stations whose name is a
+ * typo away from the text ("Gnet", "Brusels"), again busiest first.
  */
-export function findStations(stations, query, limit = 6) {
+export function findStations(stations, query, limit = 6, { fuzzy = true } = {}) {
   const regex = stationQueryRegex(query);
   if (!regex) return [];
   const exact = new RegExp(`^${regex.source}$`, "iu");
@@ -246,7 +342,7 @@ export function findStations(stations, query, limit = 6) {
             ? 3
             : null;
   };
-  return stations
+  const found = stations
     .map((station) => ({ station, rank: rankOf(station) }))
     .filter((match) => match.rank !== null)
     .sort(
@@ -255,6 +351,13 @@ export function findStations(stations, query, limit = 6) {
     )
     .slice(0, limit)
     .map((match) => match.station);
+  if (!fuzzy || found.length >= limit) return found;
+  const have = new Set(found);
+  for (const { station } of fuzzyStations(stations, query)) {
+    if (found.length >= limit) break;
+    if (!have.has(station)) found.push(station);
+  }
+  return found;
 }
 
 /** A station whose label (in any language) equals the text, ignoring accents and case. */
@@ -274,7 +377,8 @@ export function stationByName(stations, text) {
  * Resolve what an API caller passed as a station: an id (`BE.NMBS.008892007`),
  * a station URI, a bare station number, or a name in any language. A name must
  * match exactly (ignoring case and accents) or, failing that, is searched like
- * irail.be's station search. Returns null when nothing matches.
+ * irail.be's station search (without fuzzy matching: a typo is an error here,
+ * not another station). Returns null when nothing matches.
  */
 export function resolveStation(stations, input) {
   const text = String(input ?? "").trim();
@@ -292,7 +396,7 @@ export function resolveStation(stations, input) {
     );
   return (
     stationByName(stations, text) ??
-    findStations(stations, text, 1)[0] ??
+    findStations(stations, text, 1, { fuzzy: false })[0] ??
     stationByName(stations.unrouted ?? [], text) ??
     null
   );

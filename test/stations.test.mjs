@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { editDistance } from "../src/irail-stations.mjs";
 import * as arrow from "apache-arrow";
 import {
   buildStations,
   findStations,
+  fuzzyStations,
   loadStationRows,
   normalizeLanguage,
   stationByName,
@@ -96,6 +98,26 @@ test("autocomplete matches the label of any language", () => {
   assert.deepEqual(findStations(stations, "zzzz"), []);
 });
 
+test("a name in one language finds the station labelled in another", () => {
+  const set = buildStations({
+    rows: [
+      row("008892908", "Ronse", { fr: "Renaix", en: "Ronse/Renaix" }, 60),
+      row("008886587", "Rebaix", {}, 10),
+      row("008728600", "Lille-Flandres", { nl: "Rijsel Vlaanderen" }, 400),
+    ],
+    ids: [8892908, 8886587, 8728600].map((n) => `https://irail.be/id/be.sncb/stops/S${n}`),
+    names: ["", "", ""],
+    searchable: [0, 1, 2],
+  });
+  // The French name finds Ronse first (exact), and the label stays per language.
+  const [ronse] = findStations(set, "Renaix");
+  assert.equal(ronse.key, "8892908");
+  assert.equal(stationLabel(ronse, "nl"), "Ronse");
+  assert.equal(stationLabel(ronse, "fr"), "Renaix");
+  assert.equal(findStations(set, "Renaiks")[0].key, "8892908"); // typo in a foreign name
+  assert.equal(findStations(set, "rijsel")[0].key, "8728600");
+});
+
 test("matches rank exact, word prefix, prefix, partial, then by avgStopTimes", () => {
   const set = buildStations({
     rows: [
@@ -111,6 +133,82 @@ test("matches rank exact, word prefix, prefix, partial, then by avgStopTimes", (
   });
   assert.deepEqual(label(findStations(set, "hoven")), ["4", "5", "3", "2", "1"]);
   assert.deepEqual(label(findStations(set, "hoven", 2)), ["4", "5"]);
+});
+
+test("edit distance counts inserts, deletes, replaces and swapped neighbours", () => {
+  assert.equal(editDistance("gent", "gent"), 0);
+  assert.equal(editDistance("gnet", "gent"), 1); // swap
+  assert.equal(editDistance("brusels", "brussels"), 1); // missing letter
+  assert.equal(editDistance("lueven", "leuven"), 1);
+  assert.equal(editDistance("antwerpn", "antwerpen"), 1);
+  assert.equal(editDistance("kitten", "sitting", 5), 3);
+  // Gives up beyond the limit.
+  assert.equal(editDistance("abcdef", "uvwxyz", 2), 3);
+  assert.equal(editDistance("a", "abcdef", 2), 3);
+});
+
+const fuzzySet = () =>
+  buildStations({
+    rows: [
+      row("1", "Leuven", {}, 300),
+      row("2", "Leuven-Noord", {}, 20), // a quieter name close to the same text
+      row("3", "Louven", {}, 5), // one letter off "Leuven"
+      row("4", "Gent-Sint-Pieters", { fr: "Gand-Saint-Pierre" }, 500),
+      row("5", "Genk", {}, 150),
+      row("6", "Gentbrugge", {}, 40),
+      row("7", "Brussel-Zuid/Bruxelles-Midi", { en: "Brussels-South" }, 900),
+      row("8", "Brussel-Centraal", { en: "Brussels-Central" }, 800),
+    ],
+    ids: [1, 2, 3, 4, 5, 6, 7, 8].map((n) => `https://irail.be/id/be.sncb/stops/S${n}`),
+    names: Array(8).fill(""),
+    searchable: [0, 1, 2, 3, 4, 5, 6, 7],
+  });
+
+test("fuzzy matching finds stations despite typos, in any language", () => {
+  const set = fuzzySet();
+  const first = (text) => findStations(set, text)[0]?.key;
+  assert.equal(first("Lueven"), "1"); // swapped letters
+  assert.equal(first("Leuvn"), "1"); // missing letter
+  assert.equal(first("Leuvenn"), "1"); // extra letter
+  assert.equal(first("Gand Saint Piere"), "4"); // typo in a French name
+  assert.equal(first("brusels south"), "7"); // typo in an English name
+  assert.equal(first("Gand-Sant-Pierre"), "4");
+  assert.equal(first("LEUVRN"), "1"); // replaced letter, other case
+  // The text is still being typed: the start of the name is a typo away.
+  assert.equal(first("Brusell"), "7");
+});
+
+test("fuzzy matches follow exact ones and rank the busiest station first", () => {
+  const set = fuzzySet();
+  // The typo "Gnet" matches nothing exactly, so every result is fuzzy, busiest
+  // first: Gent-Sint-Pieters (500) before Gentbrugge (40). Genk is two edits away.
+  assert.deepEqual(
+    findStations(set, "Gnet").map((s) => s.key),
+    ["4", "6"],
+  );
+  assert.deepEqual(
+    fuzzyStations(set, "Gnet").map((m) => m.station.avgStopTimes),
+    [500, 40],
+  );
+  // Exact matches stay in front: "leuven" matches two by name, and the typo
+  // match of the quietest station never overtakes them.
+  assert.deepEqual(
+    findStations(set, "leuven").map((s) => s.key).slice(0, 2),
+    ["1", "2"],
+  );
+  // Fuzzy only fills the places the exact matches leave free.
+  assert.deepEqual(findStations(set, "leuven", 2).map((s) => s.key), ["1", "2"]);
+  assert.equal(findStations(set, "leuven", 6).at(-1).key, "3"); // Louven, after the exact ones
+});
+
+test("fuzzy matching can be switched off and stays quiet for short or distant text", () => {
+  const set = fuzzySet();
+  assert.deepEqual(findStations(set, "Gnet", 6, { fuzzy: false }), []);
+  assert.deepEqual(findStations(set, "xyz"), []); // too short to be typo-matched
+  assert.deepEqual(findStations(set, "Gnt"), []); // three letters: no typos allowed
+  assert.deepEqual(findStations(set, "Mechelen"), []); // nothing close
+  assert.deepEqual(findStations(set, "zzzz"), []);
+  assert.deepEqual(fuzzyStations(set, ""), []);
 });
 
 test("query normalization follows irail.be", () => {

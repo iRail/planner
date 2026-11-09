@@ -98,6 +98,28 @@ test("stations lists every station labelled in the requested language", async (t
   await assert.rejects(planner.stations({ language: "es" }), (e) => e.status === 400);
 });
 
+test("stations searches by name, tolerating typos unless told not to", async (t) => {
+  const { planner } = await setup(t);
+  assert.deepEqual(
+    (await planner.stations({ query: "Origin" })).map((s) => s.id),
+    ["BE.NMBS.001000001"],
+  );
+  // A typo finds the station; the language only changes the label.
+  const typo = await planner.stations({ query: "Orgin Town", language: "fr" });
+  assert.equal(typo[0].id, "BE.NMBS.001000001");
+  assert.equal(typo[0].name, "Origine");
+  assert.deepEqual(await planner.stations({ query: "Orgin Town", fuzzy: false }), []);
+  assert.deepEqual(await planner.stations({ query: "Nowhere" }), []);
+  assert.equal((await planner.stations({ query: "Origin", limit: 1 })).length, 1);
+  await assert.rejects(planner.stations({ query: 5 }), (e) => e.status === 400);
+  await assert.rejects(planner.stations({ query: "a", limit: 0 }), (e) => e.status === 400);
+  // Names given to other calls stay strict: a typo is not another station.
+  await assert.rejects(
+    planner.liveboard({ station: "Orgin Town", time: nine }),
+    (e) => e.status === 404,
+  );
+});
+
 test("liveboard lists the hour of departures with destinations", async (t) => {
   const { planner } = await setup(t);
   const board = await planner.liveboard({ station: "BE.NMBS.001000001", time: nine });

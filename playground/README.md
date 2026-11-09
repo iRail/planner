@@ -73,7 +73,8 @@ manifest's `irail:extensions` link and `irail.json`), because the LC `stops.arro
 has a single label per stop. `irail/stations.mjs` ports irail.be's station search:
 text in any language matches, the language picker chooses the displayed label,
 and results rank exact > word prefix > prefix > partial, then by `avgStopTimes`
-descending. Covered by `test/stations.test.mjs`.
+descending. The main page's From and To boxes use the same search (`stations({ query })`), so "Renaix" finds Ronse; stops whose own label or id contains the text are added for timetables without station data. Places the matches leave free are filled with fuzzy matches (a missing, extra,
+wrong or swapped letter: "Gnet", "Brusels"), busiest first. Covered by `test/stations.test.mjs`.
 
 The quick start, API reference and format notes in `index.html` are the hosted
 library documentation. Keep these and the repository README consistent.

@@ -176,6 +176,15 @@ export interface IrailQuery {
   sourceId?: string;
 }
 
+export interface StationsQuery extends IrailQuery {
+  /** Search for this text instead of listing every station. */
+  query?: string;
+  /** With `query`: at most this many stations. Default 10. */
+  limit?: number;
+  /** With `query`: also match typos. Default true. */
+  fuzzy?: boolean;
+}
+
 /** A station, labelled in the query's language. */
 export interface Station {
   /** `BE.NMBS.008892007`; accepted wherever a station is asked for. */
@@ -352,7 +361,14 @@ export class NotSupportedError extends IrailApiError {
  * IrailApiErrors.
  */
 export interface IrailApi {
-  stations(query?: IrailQuery): Promise<Station[]>;
+  /**
+   * Every station, by name. With `query`, a search instead (like the station
+   * box of irail.be): the stations whose name, in any language, equals,
+   * starts with or contains the text, best first, then busiest first. Unless
+   * `fuzzy` is false, free places are filled with stations a typo away
+   * ("Gnet", "Brusels"), busiest first.
+   */
+  stations(query?: StationsQuery): Promise<Station[]>;
   liveboard(
     query: LiveboardQuery & { type: "arrival" },
   ): Promise<LiveboardResult<ArrivalEntry>>;
@@ -468,7 +484,7 @@ export interface PlannerRequests {
     payload: IsochroneQuery & { maxWalkMeters: number },
     onProgress?: OnProgress,
   ): Promise<IsochroneResult>;
-  request(type: "stations", payload: IrailQuery): Promise<Station[]>;
+  request(type: "stations", payload: StationsQuery): Promise<Station[]>;
   request(
     type: "liveboard",
     payload: LiveboardQuery,

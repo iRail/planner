@@ -1,5 +1,6 @@
 import { dataUrl } from "./config.mjs";
 import { resolveDataUrl } from "../src/planner-config.mjs";
+import { normalizeLanguage, stationKey } from "../src/irail-stations.mjs";
 import {
   createTrainViews,
   serviceDayInstant,
@@ -85,19 +86,82 @@ function findSource(sourceId) {
   return state.sources.find((source) => source.id === sourceId);
 }
 
+// Which stop of a source stands for an NMBS station number.
+const stopsByStation = new WeakMap();
+function stopOfStation(source, key) {
+  let stops = stopsByStation.get(source);
+  if (!stops) {
+    stops = new Map();
+    for (const idx of source.stopFamily.searchable) {
+      const stationNumber = stationKey(source.stops.id[idx]);
+      if (stationNumber !== null && !stops.has(stationNumber))
+        stops.set(stationNumber, idx);
+    }
+    stopsByStation.set(source, stops);
+  }
+  return stops.get(key);
+}
+
+const stationLanguage =
+  (navigator.languages ?? [navigator.language]).map(normalizeLanguage).find(Boolean) ||
+  "en";
+const SUGGESTIONS = 8;
+
+/**
+ * Stops for the text typed: first the planner's station search (names in every
+ * language, so "Renaix" finds Ronse; typos tolerated; busiest first), then
+ * stops whose own label or id contains the text, for timetables without
+ * station data. `[{ source, idx, label? }]`.
+ */
+async function searchStops(query) {
+  const matches = [];
+  const seen = new Set();
+  const add = (source, idx, label) => {
+    const id = `${source.id}\n${idx}`;
+    if (matches.length >= SUGGESTIONS || seen.has(id)) return;
+    seen.add(id);
+    matches.push({ source, idx, label });
+  };
+  for (const source of activeSources()) {
+    try {
+      const stations = await planner.request("stations", {
+        query,
+        limit: SUGGESTIONS,
+        sourceId: source.id,
+        language: stationLanguage,
+      });
+      for (const station of stations) {
+        const idx = stopOfStation(source, stationKey(station.id));
+        if (idx !== undefined) add(source, idx, station.name);
+      }
+    } catch (error) {
+      console.warn("Station search failed", error);
+    }
+  }
+  for (const source of activeSources())
+    for (const idx of source.stopFamily.searchable) {
+      if (matches.length >= SUGGESTIONS) return matches;
+      const name = (source.stops.name[idx] || "").toLowerCase();
+      const id = source.stops.id[idx].toLowerCase();
+      if (name.includes(query) || id.includes(query)) add(source, idx);
+    }
+  return matches;
+}
+
 function setupAutocomplete(inputId, suggestionsId, onPick) {
   const input = el(inputId);
   const box = el(suggestionsId);
   let selected = null; // { sourceId, stopIdx } | null
+  let revision = 0; // only the newest search draws its suggestions
 
   function render(matches) {
     box.innerHTML = "";
-    for (const { source, idx } of matches) {
+    for (const { source, idx, label } of matches) {
       const button = document.createElement("button");
       button.type = "button";
       const name = source.stops.name[idx] || source.stops.id[idx];
       const suffix = activeSources().length > 1 ? ` · ${source.name}` : "";
-      button.innerHTML = `${escapeHtml(name)} <span class="stop-id">${escapeHtml(source.stops.id[idx])}${escapeHtml(suffix)}</span>`;
+      button.innerHTML = `${escapeHtml(label || name)} <span class="stop-id">${escapeHtml(source.stops.id[idx])}${escapeHtml(suffix)}</span>`;
       button.addEventListener("click", () => {
         input.value = name;
         selected = { sourceId: source.id, stopIdx: idx };
@@ -122,18 +186,10 @@ function setupAutocomplete(inputId, suggestionsId, onPick) {
       box.innerHTML = "";
       return;
     }
-    const matches = [];
-    outer: for (const source of activeSources()) {
-      for (const idx of source.stopFamily.searchable) {
-        if (matches.length >= 8) break outer;
-        const name = (source.stops.name[idx] || "").toLowerCase();
-        const id = source.stops.id[idx].toLowerCase();
-        if (name.includes(query) || id.includes(query)) {
-          matches.push({ source, idx });
-        }
-      }
-    }
-    render(matches);
+    const mine = (revision += 1);
+    searchStops(query).then((matches) => {
+      if (mine === revision && !selected) render(matches);
+    });
   });
 
   input.addEventListener("blur", () => {

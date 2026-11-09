@@ -263,7 +263,7 @@ for (const { departure, arrival, transfers, legs } of connections)
 
 | Call                                        | iRail API                  | Returns and notes                                                                                                                                                            |
 | ------------------------------------------- | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `stations({ language })`                    | `GET /stations/`           | `Station[]`: `id`, `uri`, `name` (in `language`: `nl`, `fr`, `en`, `de`; default `en`), `standardName`, `latitude`, `longitude`.                                              |
+| `stations({ language, query, limit, fuzzy })` | `GET /stations/`         | `Station[]`: `id`, `uri`, `name` (in `language`: `nl`, `fr`, `en`, `de`; default `en`), `standardName`, `latitude`, `longitude`. With `query`, a search instead of the full list (see below). |
 | `liveboard({ station, time, type })`        | `GET /liveboard/`          | `{ station, type, entries }` for the hour from `time`. `type` is `departure` (default) or `arrival`. Entries have `time`, `vehicle`, `platform` and `destination` or `origin`. |
 | `connections({ from, to, time, limit })`    | `GET /connections/`        | `Connection[]` (default 6, at most 12), continuing past the search window until it has them: `departure`, `arrival`, `duration` (s), `transfers` and `legs`.                  |
 | `vehicle({ id, date })`                     | `GET /vehicle/`            | `{ vehicle, stops }` for a train such as `BE.NMBS.IC508` or `IC508`, on the Belgian day of `date`. Stops have `arrival` and `departure`.                                       |
@@ -286,6 +286,15 @@ Delays, cancellations and platforms come from the real-time feed (see
 station search results come from the iRail CDN's `stations.arrow` extension, loaded on
 first use; without it the timetable's own stop names are used. A leg's `direction` is the
 timetable's published headsign.
+
+`stations({ query })` searches like the station box of irail.be: stations whose name, in any
+language and ignoring accents and case, equals, starts with or contains the text come first
+(`limit` of them, 10 by default), the busiest (`avgStopTimes`) first within each kind. Free
+places are then filled with stations a typo away, again busiest first: `"Gnet"` finds
+Gent-Sint-Pieters, `"Brusels"` Brussels-Midi. Text of one to three letters allows no typos,
+four to six allow one, longer text two; a missing, extra, wrong or swapped letter is one.
+Pass `fuzzy: false` for exact matching only. Names given to the other calls (`liveboard`,
+`connections`, …) stay strict: a typo there is a 404, not another station.
 
 Not yet supported inside supported calls: `connections` with `arriveBy: true` (the
 planner searches forward from a time) and `vehicles` other than `all`. They reject with

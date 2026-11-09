@@ -7,6 +7,7 @@ export {
   LANGUAGES,
   buildStations,
   findStations,
+  fuzzyStations,
   normalizeLanguage,
   stationByName,
   stationKey,

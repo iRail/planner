@@ -6,6 +6,7 @@
 // nothing is canceled. Platforms come from the feed and are `null` otherwise.
 import {
   apiStationId,
+  findStations,
   normalizeLanguage,
   resolveStation,
   stationLabel,
@@ -179,6 +180,18 @@ async function makeContext(core, sources, payload = {}) {
 
 async function stations(core, sources, payload) {
   const context = await makeContext(core, sources, payload);
+  if (payload.query !== undefined) {
+    // A search, like the station box of irail.be: best match first, with
+    // typos tolerated unless `fuzzy` is false.
+    if (typeof payload.query !== "string")
+      throw new IrailApiError(400, "query must be a string");
+    const limit = payload.limit ?? 10;
+    if (!Number.isInteger(limit) || limit < 1)
+      throw new IrailApiError(400, "limit must be a positive integer");
+    return findStations(context.stations, payload.query, limit, {
+      fuzzy: payload.fuzzy !== false,
+    }).map((station) => stationView(station, context.lang));
+  }
   const all = [...context.stations, ...(context.stations.unrouted ?? [])];
   all.sort((a, b) => a.name.localeCompare(b.name));
   return all.map((station) => stationView(station, context.lang));
