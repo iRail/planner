@@ -8,6 +8,7 @@ import {
   createPlanner,
 } from "../src/index.mjs";
 import { timetable, start } from "./helpers/timetable.mjs";
+import { stationKey } from "../src/irail-stations.mjs";
 import { startWorker } from "./helpers/worker.mjs";
 
 // Station numbers (the digits) tie stop IRIs to the iRail station table.
@@ -185,6 +186,31 @@ test("vehicle lists a train's stops with arrival and departure times", async (t)
   // The id also works without the prefix, and any instant of the Belgian day.
   const later = await planner.vehicle({ id: "IC200", date: at(3 * 3600) });
   assert.equal(later.stops.length, 2);
+});
+
+test("planned ride legs name the train like the iRail API, and its id opens the run", async (t) => {
+  const { planner } = await setup(t);
+  const result = await planner.plan({
+    origin: { sourceId: "default", stopIdx: 0 },
+    destination: { sourceId: "default", stopIdx: 1 },
+    departureAfter: start,
+    maxWalkMeters: 0,
+  });
+  const leg = result.options[0].legs[0];
+  assert.equal(leg.vehicle.name, "IC 100");
+  assert.equal(leg.vehicle.id, "BE.NMBS.IC100");
+  assert.equal(leg.vehicle.type, "IC");
+  assert.equal(leg.vehicle.number, "100");
+  // The same vehicle opens the trip of that service day, with the leg's stops on it.
+  const day = String(leg.serviceDate);
+  const noon = new Date(Date.UTC(+day.slice(0, 4), +day.slice(4, 6) - 1, +day.slice(6), 12));
+  const run = await planner.vehicle({ id: leg.vehicle.id, date: noon });
+  assert.equal(run.vehicle.name, "IC 100");
+  assert.ok(
+    run.stops.some(
+      (stop) => stationKey(stop.station.id) === stationKey(leg.boardStopIri),
+    ),
+  );
 });
 
 test("vehicle rejects unknown trains, other days and missing ids", async (t) => {

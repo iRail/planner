@@ -1,4 +1,4 @@
-import { createIrailApi } from "./irail-api.mjs";
+import { createIrailApi, vehicleOf, vehicleView } from "./irail-api.mjs";
 import { IrailApiError } from "./irail-errors.mjs";
 
 const IRAIL_CALLS = new Set(["stations", "liveboard", "connections", "vehicle"]);
@@ -45,6 +45,7 @@ export function createPlannerService(planner) {
           routeName: route.shortName || route.longName || "",
           routeType: route.routeType,
           headsign: trip.headsign || "",
+          vehicle: vehicleView(vehicleOf(source, leg.trip)),
           tripIri: trip.iri,
           routeIri: route.iri,
           boardStopIri: source.stops.iri[leg.boardStop],

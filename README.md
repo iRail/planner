@@ -127,7 +127,10 @@ const surface = await planner.isochrone({
 ```
 
 Ride legs include `sourceId`, `trip`, `boardStop`, `alightStop`, `boardTime`,
-`alightTime`, `serviceDate`, `routeName`, `routeType`, `headsign`, `tripIri`,
+`alightTime`, `serviceDate`, `routeName`, `routeType`, `headsign`, `vehicle` (the
+train as the iRail API names it: `{ id: "BE.NMBS.IC502", name: "IC 502", type, number }`;
+pass its `id`, and an instant on the leg's `serviceDate`, to `vehicle()` for the stops of
+that run), `tripIri`,
 `routeIri`, `boardStopIri`, `alightStopIri` and the boarding `connectionIri`, and,
 from real-time data, `boardDelay` and `alightDelay` (seconds late) and
 `boardPlatform` and `alightPlatform` (`null` when unknown). `boardTime`, `alightTime`

@@ -151,7 +151,7 @@ export function normalizePlannerJourney(journey, { names, ids }) {
               canceled: Boolean(leg.alightCanceled),
               platform: leg.alightPlatform ?? undefined,
             },
-            label: leg.routeName || "Train",
+            label: leg.vehicle?.name || leg.routeName || "Train",
             headsign: leg.headsign,
           },
     ),

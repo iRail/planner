@@ -172,6 +172,7 @@ test("planner journeys are normalized to the same shape", () => {
           boardTime: 1000,
           alightTime: 5000,
           routeName: "IC",
+          vehicle: { id: "BE.NMBS.IC502", name: "IC 502" },
           headsign: "Eupen",
           boardStopIri: stopsFixture.ids[2],
           alightStopIri: stopsFixture.ids[3],
@@ -182,7 +183,7 @@ test("planner journeys are normalized to the same shape", () => {
   );
   assert.deepEqual(
     [journey.legs[0].from.key, journey.legs[0].to.key, journey.legs[0].label],
-    ["8892007", "8841004", "IC"],
+    ["8892007", "8841004", "IC 502"],
   );
   const walking = normalizePlannerJourney(
     {

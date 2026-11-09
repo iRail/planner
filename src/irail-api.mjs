@@ -49,7 +49,7 @@ function tripTables(source) {
 }
 
 /** `{ id: "IC508", type: "IC", number: "508", headsign }` for a trip. */
-function vehicleOf(source, tripIdx) {
+export function vehicleOf(source, tripIdx) {
   const tables = tripTables(source);
   const route = tables.routeIdx[tripIdx];
   const type = tables.routeShort[route] || tables.routeLong[route] || "";
@@ -76,7 +76,7 @@ function tripsOfVehicle(source, vehicleId) {
 }
 
 /** The public shape of a vehicle (a train, or a bus replacing one). */
-const vehicleView = (vehicle) => ({
+export const vehicleView = (vehicle) => ({
   id: VEHICLE_PREFIX + vehicle.id,
   uri: `http://irail.be/vehicle/${vehicle.id}`,
   type: vehicle.type,

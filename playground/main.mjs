@@ -1,6 +1,11 @@
 import { dataUrl } from "./config.mjs";
 import { resolveDataUrl } from "../src/planner-config.mjs";
 import {
+  createTrainViews,
+  serviceDayInstant,
+  stationRefOf,
+} from "./trains.mjs";
+import {
   PlannerClient,
   createPlannerWorker,
   sampleIsoSurface,
@@ -8,6 +13,9 @@ import {
   WALK_SPEED,
 } from "../src/browser.mjs";
 let planner;
+const trains = createTrainViews({
+  request: (type, payload) => planner.request(type, payload),
+});
 
 const state = {
   // Stop-search metadata only; connections and Arrow tables stay in the worker.
@@ -239,22 +247,44 @@ const canceledTag = (canceled) =>
   canceled ? `<span class="canceled-tag">Canceled</span>` : "";
 
 function renderLeg(source, leg) {
-  const routeName = leg.routeName;
-  const headsign = leg.headsign;
+  const stopName = (stop) => source.stops.name[stop] || source.stops.id[stop];
+  const vehicle = leg.vehicle ?? { id: "", name: leg.routeName };
 
   const div = document.createElement("div");
   div.className = `leg${leg.canceled ? " canceled" : ""}`;
   div.innerHTML = `
 <div class="row">
-  <span class="stop">${escapeHtml(source.stops.name[leg.boardStop] || source.stops.id[leg.boardStop])}</span>
+  <span class="stop"></span>
   <span class="time">${formatTime(leg.boardTime)}${delayBadge(leg.boardDelay)}${platformBadge(leg.boardPlatform)}${canceledTag(leg.boardCanceled)}</span>
 </div>
 <div class="row">
-  <span class="stop">${escapeHtml(source.stops.name[leg.alightStop] || source.stops.id[leg.alightStop])}</span>
+  <span class="stop"></span>
   <span class="time">${formatTime(leg.alightTime)}${delayBadge(leg.alightDelay)}${platformBadge(leg.alightPlatform)}${canceledTag(leg.alightCanceled)}</span>
 </div>
-<div class="trip">${escapeHtml(source.name)} · ${routeName ? escapeHtml(routeName) + " · " : ""}${escapeHtml(headsign || "")}</div>
+<div class="trip"><span class="trip-line">${escapeHtml(source.name)} · <span class="trip-vehicle"></span>${leg.headsign ? ` → ${escapeHtml(leg.headsign)}` : ""}</span></div>
+<div class="trip-host"></div>
     `;
+  // Stations open their liveboard, the train opens its run on this day.
+  const [boardCell, alightCell] = div.querySelectorAll(".stop");
+  boardCell.replaceChildren(
+    trains.stationButton(stationRefOf(leg.boardStopIri, stopName(leg.boardStop))),
+  );
+  alightCell.replaceChildren(
+    trains.stationButton(stationRefOf(leg.alightStopIri, stopName(leg.alightStop))),
+  );
+  const host = div.querySelector(".trip-host");
+  const slot = div.querySelector(".trip-vehicle");
+  if (vehicle.id)
+    slot.replaceWith(
+      trains.vehicleButton({
+        vehicle,
+        date: serviceDayInstant(leg.serviceDate) ?? new Date(leg.boardTime * 1000),
+        highlight: { from: leg.boardStopIri, to: leg.alightStopIri },
+        key: `leg|${vehicle.id}|${leg.serviceDate}|${leg.boardStopIri}`,
+        panelHost: host,
+      }),
+    );
+  else slot.textContent = vehicle.name || "train";
   return div;
 }
 
@@ -276,7 +306,7 @@ function cancellationReason(option) {
     .map((leg) => {
       const source = findSource(leg.sourceId);
       const name = (stop) => source.stops.name[stop] || source.stops.id[stop];
-      return `${leg.routeName || "train"} ${name(leg.boardStop)} → ${name(leg.alightStop)}`;
+      return `${leg.vehicle?.name || leg.routeName || "train"} ${name(leg.boardStop)} → ${name(leg.alightStop)}`;
     });
   return `Not possible: ${trains.join(" and ")} ${trains.length > 1 ? "are" : "is"} canceled`;
 }
@@ -1316,8 +1346,12 @@ function startWatching({ immediate = false } = {}) {
     state.feed = summarizeFeeds(event.detail);
     state.checkedAt = Date.now();
     showLive("live");
+    trains.refreshBoard();
   });
-  watcher.addEventListener("update", () => refreshJourneys());
+  watcher.addEventListener("update", () => {
+    refreshJourneys();
+    trains.refresh();
+  });
   watcher.addEventListener("error", () => showLive("stale"));
   state.watcher = watcher;
 }
@@ -1344,6 +1378,7 @@ el("live-now").addEventListener("click", async () => {
     state.feed = summarizeFeeds(await planner.refreshRealtime());
     state.checkedAt = Date.now();
     await refreshJourneys();
+    trains.refresh();
     showLive(state.watcher ? "live" : "off");
   } catch (error) {
     console.error(error);

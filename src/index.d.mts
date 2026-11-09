@@ -98,6 +98,8 @@ export interface RideLeg {
   routeName: string;
   routeType: number;
   headsign: string;
+  /** The train, like in the iRail API: `{ id: "BE.NMBS.IC502", name: "IC 502", … }`. Pass its `id` and the leg's `serviceDate` to `vehicle()`. */
+  vehicle: Vehicle;
   tripIri: string;
   routeIri: string;
   connectionIri: string;

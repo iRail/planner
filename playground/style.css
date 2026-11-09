@@ -613,7 +613,8 @@ td {
 }
 .option.canceled .option-duration,
 .option.canceled .leg.canceled .time,
-.option.canceled .leg.canceled .row .stop {
+.option.canceled .leg.canceled .row .stop,
+.option.canceled .leg.canceled .row .stop-link {
   text-decoration: line-through;
   text-decoration-thickness: 1px;
 }
@@ -640,4 +641,195 @@ td {
 }
 .leg.canceled {
   border: 1px solid var(--danger);
+}
+
+/* Clickable trains and stations: a train opens its trip, a station its liveboard */
+.vehicle-link,
+.stop-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.vehicle-link {
+  color: var(--accent);
+  font-weight: 700;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+.stop-link {
+  font-weight: inherit;
+}
+.stop-link:hover,
+.vehicle-link:hover {
+  text-decoration: underline;
+}
+.vehicle-link:focus-visible,
+.stop-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+.vehicle-link[aria-expanded="true"]::after {
+  content: " ▴";
+}
+.vehicle-link[aria-expanded="false"]::after {
+  content: " ▾";
+  color: var(--muted);
+  font-weight: 400;
+}
+.trip-panel {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  font-size: 0.85rem;
+  cursor: default;
+}
+.trip-head {
+  margin-bottom: 6px;
+  font-weight: 700;
+}
+.trip-stops,
+.board-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.trip-stops li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 2px 0 2px 8px;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+.trip-stops li.ridden {
+  border-left-color: var(--accent);
+  color: var(--text);
+}
+.trip-stops li.canceled .stop-link,
+.trip-stops li.canceled .trip-time {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+.trip-time {
+  min-width: 4.5em;
+  font-variant-numeric: tabular-nums;
+}
+.trip-time .was {
+  color: var(--muted);
+  font-size: 0.8em;
+}
+.trip-panel .delay,
+.liveboard .delay {
+  margin-left: 4px;
+  color: var(--danger);
+  font-weight: 700;
+}
+.trip-panel .platform,
+.liveboard .platform {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--border);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.trip-panel .canceled-tag,
+.liveboard .canceled-tag {
+  margin-left: 6px;
+}
+
+dialog.liveboard {
+  width: min(560px, calc(100vw - 32px));
+  max-height: 85vh;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+}
+dialog.liveboard::backdrop {
+  background: rgb(0 0 0 / 45%);
+}
+.liveboard-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.liveboard-head h2 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+.liveboard-close {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.liveboard-tabs {
+  display: flex;
+  gap: 6px;
+  margin: 12px 0;
+}
+.liveboard-tabs button {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.liveboard-tabs button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+.board-list > li {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.board-list > li.canceled .board-place,
+.board-list > li.canceled .trip-time {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+.board-row {
+  display: grid;
+  grid-template-columns: 6.5em 6.5em 1fr auto;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 0.9rem;
+}
+.board-tail {
+  white-space: nowrap;
+}
+.liveboard-body .trip-panel {
+  margin: 6px 0 0;
+}
+.liveboard-foot {
+  margin: 10px 0 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+@media (max-width: 520px) {
+  .board-row {
+    grid-template-columns: 5.5em 5.5em 1fr;
+  }
+  .board-tail {
+    grid-column: 2 / -1;
+  }
 }

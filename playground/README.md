@@ -23,6 +23,13 @@ By default the playground loads the iRail CDN's live LC 2.0-alpha timetable
 time, clamped to the feed's coverage, and preselects Gent-Sint-Pieters and
 Liège-Guillemins when the source names them.
 
+On a journey, each leg names its train as the iRail API does (**IC 502**). Click the
+train to unfold its run on that day: every stop with its time, delay, platform and
+cancellation, and the part of the run the journey rides marked. Click a station to open
+its real-time liveboard (departures and arrivals of the next hour, with delays, platforms
+and cancellations); trains on the board unfold the same way. Open panels and the board
+are reloaded whenever the real-time feed changes.
+
 The build also generates a small, reproducible LC 2-alpha timetable with invented
 services between Belgian stations on **8 November 2026**, served at `?data=./data/`.
 It is illustrative and must not be used to plan real travel.
