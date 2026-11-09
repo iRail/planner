@@ -815,7 +815,7 @@ function showLive(kind, flash) {
     if (state.checkedAt) parts.push(`checked ${formatClock(state.checkedAt)}`);
     if (state.lastRun?.updatedAt)
       parts.push(`results updated ${formatClock(state.lastRun.updatedAt)}`);
-    if (kind === "live") parts.push("checking every 30 s");
+    if (kind === "live") parts.push("checking when a new copy is due");
   }
   els.liveText.textContent = parts.filter(Boolean).join(" · ");
   if (flash) {

@@ -421,6 +421,19 @@ export interface RealtimeStatus {
   changed: boolean;
   /** When the feed was produced, UTC epoch seconds. */
   timestamp?: number;
+  /**
+   * When the publisher put this copy online, UTC epoch milliseconds: the HTTP
+   * `Last-Modified`, else the feed's own `timestamp`.
+   */
+  publishedAt?: number;
+  /** How old the copy was when it was checked, in milliseconds. */
+  age?: number;
+  /**
+   * Milliseconds until the next copy is expected, learned from how often the
+   * feed is published. Absent until two copies were seen, and when the feed
+   * is late. `watchRealtime()` polls on this.
+   */
+  nextCheckIn?: number;
   /** Trip updates in the feed, and how many were matched to the timetable. */
   updates?: number;
   matched?: number;
@@ -430,8 +443,16 @@ export interface RealtimeStatus {
   canceled?: number;
 }
 export interface WatchOptions {
-  /** Milliseconds between polls, at least 1000. Default 30000. */
+  /**
+   * Milliseconds between polls, at least 1000. Default 30000. With `adaptive`,
+   * only the wait when the feed gives no timing.
+   */
   intervalMs?: number;
+  /**
+   * Time the polls to the feed: look right after its next copy is due (see
+   * `RealtimeStatus.nextCheckIn`) instead of every `intervalMs`. Default true.
+   */
+  adaptive?: boolean;
   /** Poll right away rather than after the first interval. Default true. */
   immediate?: boolean;
 }
@@ -447,9 +468,10 @@ export interface RealtimeEventMap {
 export class RealtimeWatcher extends EventTarget {
   constructor(
     refresh: () => Promise<RealtimeStatus[]>,
-    options?: Pick<WatchOptions, "intervalMs">,
+    options?: Pick<WatchOptions, "intervalMs" | "adaptive">,
   );
   readonly intervalMs: number;
+  readonly adaptive: boolean;
   readonly running: boolean;
   /** The status of the last successful poll. */
   status?: RealtimeStatus[];
@@ -485,7 +507,7 @@ export interface RealtimeApi {
    * search. Rejects when the feed cannot be read; the last data stays in use.
    */
   refreshRealtime(): Promise<RealtimeStatus[]>;
-  /** Poll the feed (every 30 s by default); listen for `update` events. */
+  /** Poll the feed, timed to when it is published (every 30 s without timing); listen for `update` events. */
   watchRealtime(options?: WatchOptions): RealtimeWatcher;
 }
 

@@ -3,6 +3,11 @@ import assert from "node:assert/strict";
 import { readFile, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { RealtimeWatcher, createPlanner } from "../src/index.mjs";
+import {
+  createFeedClock,
+  feedValidators,
+  sameCopy,
+} from "../src/realtime-timing.mjs";
 import { decodeTripUpdates } from "../src/gtfs-rt.mjs";
 import { applyRealtime, realtimeFeeds } from "../src/realtime.mjs";
 import { timetable, start } from "./helpers/timetable.mjs";
@@ -62,7 +67,7 @@ const lateTrip = (delay) =>
     ],
   });
 
-async function setup(t, { feed, realtime = true } = {}) {
+async function setup(t, { feed, realtime = true, wrapFetch } = {}) {
   const fixture = await timetable({
     stopIris,
     tripShortNames: ["100", "200", "300", "400"],
@@ -102,7 +107,7 @@ async function setup(t, { feed, realtime = true } = {}) {
   };
   const planner = createPlanner({
     dataUrl: "https://example.org/data/",
-    fetch: fetcher,
+    fetch: wrapFetch ? wrapFetch(fetcher) : fetcher,
   });
   await planner.init();
   return { ...fixture, planner, setFeed, feedFile, fetcher };
@@ -775,4 +780,220 @@ test("the browser worker client refreshes real-time data and sees it in the API 
   assert.equal(status.changed, true);
   board = await client.liveboard({ station: "Origin", time: nine });
   assert.equal(board.entries[0].delay, 60);
+});
+
+// ------------------------------------------------------------------- timing
+
+const headers = (values) => new Headers(values);
+const clockAt = (...times) => {
+  const clock = createFeedClock();
+  for (const time of times) clock.see({ lastModified: time }, time);
+  return clock;
+};
+
+test("validators come from the response headers; a browser may hide Date", () => {
+  const seen = feedValidators(
+    headers({
+      etag: '"a"',
+      "last-modified": "Mon, 09 Nov 2026 16:43:32 GMT",
+      date: "Mon, 09 Nov 2026 16:43:53 GMT",
+    }),
+    Date.parse("2026-11-09T16:43:54Z"),
+  );
+  assert.equal(seen.etag, '"a"');
+  assert.equal(seen.lastModified, Date.parse("2026-11-09T16:43:32Z"));
+  assert.equal(seen.clockOffset, -1000, "the server's clock is a second behind ours");
+  const hidden = feedValidators(headers({ "last-modified": "Mon, 09 Nov 2026 16:43:32 GMT" }));
+  assert.equal(hidden.clockOffset, undefined);
+  assert.equal(hidden.etag, undefined);
+  assert.equal(feedValidators(headers({ "last-modified": "nonsense" })).lastModified, undefined);
+});
+
+test("two responses are one copy when their ETags, or else their times, agree", () => {
+  assert.ok(sameCopy({ etag: '"a"', lastModified: 1 }, { etag: '"a"', lastModified: 2 }));
+  assert.ok(!sameCopy({ etag: '"a"', lastModified: 1 }, { etag: '"b"', lastModified: 1 }));
+  assert.ok(sameCopy({ lastModified: 1 }, { lastModified: 1 }));
+  assert.ok(!sameCopy({ lastModified: 1 }, { lastModified: 2 }));
+  assert.ok(!sameCopy({}, {}), "without validators every response may be new");
+});
+
+test("the next check is timed to the publication after the one seen", () => {
+  const t = Date.parse("2026-11-09T16:00:00Z");
+  const clock = clockAt(t, t + 30_000, t + 60_000);
+  assert.equal(clock.period(), 30_000);
+  // Seen 5 s after the last publication: the next is due 25 s later, plus a second.
+  assert.equal(clock.nextCheckIn(t + 65_000), 26_000);
+  assert.equal(clock.age(t + 65_000), 5_000);
+  // Due and not there: look again soon, but not for ever.
+  assert.equal(clock.nextCheckIn(t + 92_000), 2_000);
+  assert.equal(clock.nextCheckIn(t + 200_000), undefined, "a feed that stays quiet is polled plainly");
+  assert.equal(clockAt(t).nextCheckIn(t), undefined, "one publication tells no period");
+  assert.equal(createFeedClock().nextCheckIn(), undefined);
+});
+
+test("the period ignores a late publication and a clock that cannot be right", () => {
+  const t = Date.parse("2026-11-09T16:00:00Z");
+  const clock = clockAt(t, t + 30_000, t + 60_000, t + 120_000, t + 150_000, t + 180_000);
+  assert.equal(clock.period(), 30_000, "the median, not the mean");
+  // A clock running ten minutes behind would ask us to wait ten minutes.
+  assert.equal(clock.nextCheckIn(t - 600_000), undefined);
+  // The server's own clock is used when the response gave it.
+  const skewed = createFeedClock();
+  for (const time of [t, t + 30_000])
+    skewed.see({ lastModified: time, clockOffset: 3_000 }, time);
+  // 21 s by our clock, three of them already gone by the server's.
+  assert.equal(skewed.nextCheckIn(t + 40_000), 21_000 - 3_000);
+});
+
+test("the watcher waits for the feed's next publication, not a fixed interval", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const waits = [undefined, 26_000, 2_000, undefined];
+    let calls = 0;
+    const watcher = new RealtimeWatcher(
+      async () => [{ changed: true, nextCheckIn: waits[calls++] }],
+      { intervalMs: 30_000 },
+    );
+    watcher.start();
+    await flush();
+    assert.equal(calls, 1);
+    mock.timers.tick(29_999);
+    await flush();
+    assert.equal(calls, 1, "no timing yet: the plain interval");
+    mock.timers.tick(1);
+    await flush();
+    assert.equal(calls, 2);
+    mock.timers.tick(25_999);
+    await flush();
+    assert.equal(calls, 2);
+    mock.timers.tick(1);
+    await flush();
+    assert.equal(calls, 3, "the feed said 26 s");
+    mock.timers.tick(1_999);
+    await flush();
+    assert.equal(calls, 3);
+    mock.timers.tick(1);
+    await flush();
+    assert.equal(calls, 4, "and then 2 s");
+    watcher.stop();
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("a fixed watcher, and one after a failed poll, use the plain interval", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    let calls = 0;
+    const fixed = new RealtimeWatcher(
+      async () => [{ changed: false, nextCheckIn: 2_000 }],
+      { intervalMs: 10_000, adaptive: false },
+    );
+    fixed.start();
+    await flush();
+    mock.timers.tick(9_999);
+    await flush();
+    assert.equal(fixed.status.length, 1);
+    fixed.stop();
+
+    const failing = new RealtimeWatcher(
+      async () => {
+        calls += 1;
+        if (calls === 2) throw new Error("offline");
+        return [{ changed: false, nextCheckIn: 2_000 }];
+      },
+      { intervalMs: 10_000 },
+    );
+    failing.addEventListener("error", () => {});
+    failing.start();
+    await flush();
+    mock.timers.tick(2_000);
+    await flush();
+    assert.equal(calls, 2, "the hint of the first poll");
+    mock.timers.tick(9_999);
+    await flush();
+    assert.equal(calls, 2, "after the failure: not the old 2 s");
+    mock.timers.tick(1);
+    await flush();
+    assert.equal(calls, 3);
+    failing.stop();
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+// A publisher that sends ETag and Last-Modified and counts what it is asked.
+function publisher() {
+  const asked = { head: 0, get: 0, inits: [] };
+  let version = 0;
+  const wrapFetch = (fetcher) => async (url, init) => {
+    if (!String(url).endsWith("trip-updates.pb")) return fetcher(url, init);
+    asked.inits.push(init);
+    const response = await fetcher(url);
+    const headers = new Headers({
+      etag: `"v${version}"`,
+      "last-modified": new Date(Date.UTC(2026, 10, 9, 16, 0, version * 30)).toUTCString(),
+      date: new Date(Date.UTC(2026, 10, 9, 16, 0, version * 30 + 3)).toUTCString(),
+    });
+    if (init?.method === "HEAD") {
+      asked.head += 1;
+      return new Response(null, { headers });
+    }
+    asked.get += 1;
+    return new Response(await response.arrayBuffer(), { headers });
+  };
+  return { asked, wrapFetch, publish: () => (version += 1) };
+}
+
+test("the feed is only downloaded when the publisher has a new copy", async (t) => {
+  const feed = publisher();
+  const { planner, setFeed } = await setup(t, {
+    feed: { trips: [lateTrip(300)] },
+    wrapFetch: feed.wrapFetch,
+  });
+  feed.asked.head = feed.asked.get = 0;
+  const [first] = await planner.refreshRealtime();
+  assert.equal(first.changed, false, "init already read this copy");
+  assert.equal(first.publishedAt, Date.UTC(2026, 10, 9, 16, 0, 0));
+  assert.equal(feed.asked.get, 0, "a HEAD request shows nothing is new");
+  assert.equal(feed.asked.head, 1);
+
+  await setFeed({ timestamp: start + 300, trips: [lateTrip(120)] });
+  feed.publish();
+  const [second] = await planner.refreshRealtime();
+  assert.equal(second.changed, true);
+  assert.equal(second.timestamp, start + 300);
+  assert.equal(feed.asked.get, 1, "a new copy is downloaded");
+  assert.equal(second.publishedAt, Date.UTC(2026, 10, 9, 16, 0, 30));
+  assert.equal((await journeys(planner, 0, 1)).options[0].legs[0].boardDelay, 120);
+  // Every read asks to bypass a stale HTTP cache.
+  assert.ok(feed.asked.inits.every((init) => init?.cache === "no-cache"));
+});
+
+test("two publications teach the planner when the next one is due", async (t) => {
+  const feed = publisher();
+  const { planner, setFeed } = await setup(t, {
+    feed: { trips: [lateTrip(300)] },
+    wrapFetch: feed.wrapFetch,
+  });
+  const [before] = await planner.refreshRealtime();
+  assert.equal(before.nextCheckIn, undefined, "one publication tells no period");
+  await setFeed({ timestamp: start + 300, trips: [lateTrip(120)] });
+  feed.publish();
+  const [after] = await planner.refreshRealtime();
+  assert.ok(after.age >= 0);
+  // Two publications 30 s apart: a wait of about 30 s past the last one.
+  const wait = after.nextCheckIn;
+  assert.ok(wait === undefined || (wait > 0 && wait <= 60_000));
+});
+
+test("a feed without validators is read every time, as before", async (t) => {
+  const { planner, setFeed } = await setup(t, { feed: { trips: [lateTrip(300)] } });
+  const [same] = await planner.refreshRealtime();
+  assert.equal(same.changed, false);
+  assert.equal(same.nextCheckIn, undefined);
+  // The feed's own timestamp stands in for the publication time.
+  assert.equal(same.publishedAt, (start + 60) * 1000);
+  await setFeed({ timestamp: start + 300, trips: [lateTrip(120)] });
+  assert.equal((await planner.refreshRealtime())[0].changed, true);
 });

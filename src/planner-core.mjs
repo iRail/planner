@@ -25,6 +25,11 @@ import {
   realtimeFeeds,
   stopStatus,
 } from "./realtime.mjs";
+import {
+  createFeedClock,
+  feedValidators,
+  sameCopy,
+} from "./realtime-timing.mjs";
 
 export function createPlanner(
   { tableFromIPC, RecordBatchReader },
@@ -36,11 +41,15 @@ export function createPlanner(
   // feed update.
   const realtime = new Map();
   const overlaid = new Map();
+  // What each feed last said about its copy (validators, decoded body), and
+  // when each source's feed gets published, to time the next check.
+  const feedCopies = new Map();
+  const feedClocks = new Map();
   let previousNetwork;
   let previousSources;
   let previousWalk;
-  async function fetchResponse(url) {
-    const response = await fetcher(url);
+  async function fetchResponse(url, init) {
+    const response = await (init ? fetcher(url, init) : fetcher(url));
     if (!response.ok)
       throw new Error(`Could not fetch ${url}: HTTP ${response.status}`);
     return response;
@@ -163,38 +172,86 @@ export function createPlanner(
         statuses.push({ sourceId: source.id, supported: false, changed: false });
         continue;
       }
+      const clock =
+        feedClocks.get(source.id) ??
+        feedClocks.set(source.id, createFeedClock()).get(source.id);
       const decoded = await Promise.all(
-        feeds.map(async (feed) => {
-          const response = await fetchResponse(feed.url);
-          return {
-            feed,
-            decoded: decodeTripUpdates(await response.arrayBuffer()),
-          };
-        }),
+        feeds.map((feed) => fetchFeed(source, feed, clock)),
       );
-      const next = buildRealtime(source, decoded);
       const previous = realtime.get(source.id);
-      const changed = !previous || previous.timestamp !== next.timestamp;
+      let next = previous;
+      // A copy that is the one we have needs no new overlay.
+      if (!previous || decoded.some((entry) => !entry.same)) {
+        next = buildRealtime(source, decoded);
+        if (previous && previous.timestamp === next.timestamp) next = previous;
+      }
+      const changed = next !== previous;
       if (changed) {
         realtime.set(source.id, next);
         source.realtimeMargin = next.margin;
         overlaid.clear();
       }
+      const now = Date.now();
       statuses.push({
         sourceId: source.id,
         supported: true,
         changed,
-        timestamp: (changed ? next : previous).timestamp,
-        ...(changed ? next : previous).stats,
+        timestamp: next.timestamp,
+        ...next.stats,
+        // When the copy was published (HTTP `Last-Modified`, else the feed's
+        // own timestamp), how old it is, and how long to wait before it is
+        // worth looking again.
+        publishedAt: clock.published(),
+        age: clock.age(now),
+        nextCheckIn: clock.nextCheckIn(now),
       });
     }
     return statuses;
+  }
+
+  /**
+   * One feed's trip updates. When we hold a copy, a HEAD request first asks
+   * whether the publisher has a newer one (its `ETag` or `Last-Modified`
+   * changed), so waiting for a publication costs a few hundred bytes, not the
+   * whole feed. The feed is then read without the browser's HTTP cache, which
+   * the feed's own `max-age` could otherwise keep stale for a while.
+   */
+  async function fetchFeed(source, feed, clock) {
+    const key = `${source.id}\n${feed.url}`;
+    const held = feedCopies.get(key);
+    const asked = Date.now();
+    if (held) {
+      const head = await fetcher(feed.url, {
+        method: "HEAD",
+        cache: "no-cache",
+      }).catch(() => null);
+      if (head?.ok) {
+        const seen = feedValidators(head.headers, asked);
+        if (sameCopy(held.validators, seen)) {
+          clock.see(seen, asked);
+          return { feed, decoded: held.decoded, same: true };
+        }
+      }
+    }
+    const response = await fetchResponse(feed.url, { cache: "no-cache" });
+    const validators = feedValidators(response.headers, asked);
+    const decoded = decodeTripUpdates(await response.arrayBuffer());
+    clock.see(
+      validators,
+      asked,
+      // Without `Last-Modified` the feed's own timestamp is the best we have.
+      decoded.timestamp ? decoded.timestamp * 1000 : undefined,
+    );
+    feedCopies.set(key, { validators, decoded });
+    return { feed, decoded, same: false };
   }
 
   /** Forget all real-time data, for example when sources are loaded again. */
   function resetRealtime() {
     realtime.clear();
     overlaid.clear();
+    feedCopies.clear();
+    feedClocks.clear();
   }
 
   /** Whether any source's feed cancels a trip or skips a stop right now. */

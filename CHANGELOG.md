@@ -14,6 +14,13 @@ skipped stops and platforms.
 
 ### Added
 
+- **Real-time polls timed to the feed.** `watchRealtime()` no longer polls every 30 s
+  at a phase of its own, which left a new copy 20 s old on average before it was
+  seen. It learns when the feed is published from the HTTP `Last-Modified` times,
+  waits for the next copy, then looks every 2 s with a HEAD request (`ETag` /
+  `Last-Modified`) and downloads the feed only when it is new, bypassing the HTTP
+  cache. Against the iRail feed that is 1–6 s after publication. Statuses gain
+  `publishedAt`, `age` and `nextCheckIn`; `adaptive: false` restores fixed polls.
 - **Headsigns in your language.** The iRail CDN's `headsigns.arrow` extension is
   loaded on first use. A connection's `direction` is now in the query's
   `language`, and `plan()` takes `language` too: each ride leg's `headsign` is in

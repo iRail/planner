@@ -2,6 +2,7 @@
 // function: the Node `Planner` and the browser `PlannerClient`.
 
 export const DEFAULT_REALTIME_INTERVAL_MS = 30_000;
+const MIN_ADAPTIVE_DELAY_MS = 1_000;
 
 /**
  * Re-reads the real-time feed on a timer and tells listeners when it changed.
@@ -14,17 +15,29 @@ export const DEFAULT_REALTIME_INTERVAL_MS = 30_000;
  *
  * The next poll is scheduled when the previous one has finished, so slow
  * networks never pile requests up.
+ *
+ * By default polls are timed to the feed: the status of a poll says when the
+ * next copy is expected (`nextCheckIn`, learned from the feed's HTTP
+ * `Last-Modified` times), so a new copy is seen a second or two after it is
+ * published instead of up to `intervalMs` later. `intervalMs` is then the wait
+ * when the feed gives no timing, and a poll that finds nothing new yet is
+ * a small HEAD request. With `adaptive: false` every poll is `intervalMs` apart.
  */
 export class RealtimeWatcher extends EventTarget {
-  constructor(refresh, { intervalMs = DEFAULT_REALTIME_INTERVAL_MS } = {}) {
+  constructor(
+    refresh,
+    { intervalMs = DEFAULT_REALTIME_INTERVAL_MS, adaptive = true } = {},
+  ) {
     super();
     if (!Number.isFinite(intervalMs) || intervalMs < 1000)
       throw new RangeError("intervalMs must be at least 1000");
     this.refresh = refresh;
     this.intervalMs = intervalMs;
+    this.adaptive = adaptive;
     this.timer = undefined;
     this.running = false;
     this.polling = false;
+    this.failed = false;
     /** The status of the last successful poll. */
     this.status = undefined;
   }
@@ -46,10 +59,22 @@ export class RealtimeWatcher extends EventTarget {
     return this;
   }
 
+  /** Milliseconds until the next poll: the feed's own timing, else `intervalMs`. */
+  delay() {
+    // After a failed poll the old timing means nothing: wait the plain interval.
+    if (!this.adaptive || !this.status || this.failed) return this.intervalMs;
+    const hints = this.status
+      .map((source) => source.nextCheckIn)
+      .filter((wait) => Number.isFinite(wait));
+    return hints.length
+      ? Math.max(MIN_ADAPTIVE_DELAY_MS, Math.min(...hints))
+      : this.intervalMs;
+  }
+
   schedule() {
     clearTimeout(this.timer);
     if (this.running)
-      this.timer = setTimeout(() => this.pollNow(), this.intervalMs);
+      this.timer = setTimeout(() => this.pollNow(), this.delay());
   }
 
   /** Poll right away, for example when a hidden page becomes visible again. */
@@ -61,11 +86,13 @@ export class RealtimeWatcher extends EventTarget {
       const status = await this.refresh();
       if (!this.running) return status;
       this.status = status;
+      this.failed = false;
       this.dispatchEvent(new CustomEvent("poll", { detail: status }));
       if (status.some((source) => source.changed))
         this.dispatchEvent(new CustomEvent("update", { detail: status }));
       return status;
     } catch (error) {
+      this.failed = true;
       if (this.running)
         this.dispatchEvent(new CustomEvent("error", { detail: error }));
       return undefined;
@@ -86,8 +113,8 @@ export const realtimeMethods = {
     return this.request("realtime", {});
   },
   /**
-   * Poll the real-time feed (every 30 seconds by default) and emit `update`
-   * when it changes. Call `.stop()` on the result to end polling.
+   * Poll the real-time feed, timed to when it is published (every 30 seconds
+   * when it gives no timing), and emit `update` when it changes. Call `.stop()` on the result to end polling.
    */
   watchRealtime(options) {
     return new RealtimeWatcher(() => this.refreshRealtime(), options).start(

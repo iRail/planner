@@ -105,7 +105,7 @@ separate instances for independent concurrent workloads.
 | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `await planner.init(dataUrl?, { realtime? })`       | Source metadata, stop IRIs/names/coordinates, searchable station indices, release ID, timezone and coverage. Call again to load a new release. Also loads the real-time feed unless `realtime` is `false`. |
 | `await planner.refreshRealtime()`                   | Re-reads the manifest's GTFS Realtime feed; one `{ sourceId, supported, changed, timestamp, … }` per source. See [Real-time updates](#real-time-updates). |
-| `planner.watchRealtime({ intervalMs? })`            | Polls the feed (every 30 s) and emits `update` events when it changes. Returns a watcher with `stop()`.                                              |
+| `planner.watchRealtime({ intervalMs?, adaptive? })` | Polls the feed, timed to when it is published (about every 30 s), and emits `update` events when it changes. Returns a watcher with `stop()`.        |
 | `await planner.plan(query, onProgress?)`            | `{ found, options, totalOptions, scanned, window, diagnostics }`. Each option has `departure`, `arrival`, `transfers` and `legs`.                     |
 | `await planner.isochrone(query, onProgress?)`       | `{ found, noAccess, origin, points, maxWalkMeters, scanned, pages, diagnostics }`. Points include coordinates, names, networks and `durationSeconds`. |
 | `await planner.request(type, payload, onProgress?)` | The underlying message protocol (`init`, `plan`, `isochrone` and the iRail calls), also used by `PlannerClient`.                                      |
@@ -195,7 +195,7 @@ times already include the delay, and each ride leg says how much it was.
 To keep results up to date, poll the feed and search again when it changes:
 
 ```js
-const watcher = planner.watchRealtime(); // or { intervalMs: 30_000 } (the default)
+const watcher = planner.watchRealtime(); // timed to the feed; { adaptive: false, intervalMs } for a fixed rhythm
 watcher.addEventListener("update", async (event) => {
   const [status] = event.detail; // { timestamp, delayed, canceled, … }
   showJourneys(await planner.connections({ from, to }));
@@ -213,6 +213,22 @@ again. `PlannerClient` has the same methods in the browser, and the polling runs
 the page, not the worker. Both playground pages do exactly this: the main page plans the journey on screen again
 when the feed changes, keeping the selected journey and the map view, and the
 [comparison page](#development-playground-and-github-pages) redraws both sides.
+
+**Polling at the right moment.** A feed is regenerated on a schedule (the iRail one every
+30 s), and polling at a fixed interval sees each copy up to an interval late: about 20 s
+old on average, in practice. The planner reads what the HTTP response says instead:
+`Last-Modified` (when the copy was published; the feed's own `timestamp` stands in without
+it) tells the period between copies, and each poll's status says when the next is due
+(`nextCheckIn`, plus `publishedAt` and `age`). The watcher waits for that, then looks every
+2 s until the copy is there. Looking is a HEAD request that compares `ETag` or
+`Last-Modified`; the feed (about 200 KB) is only downloaded when it is new, always past the
+browser's HTTP cache (`cache: "no-cache"`), since the feed's `max-age` could otherwise serve
+a stale copy. Measured against the iRail feed, a new copy is picked up 1–6 s after it is
+published. The server's `Date` header corrects for a wrong local clock where the browser
+lets a page read it (not across origins, where `Date` and `Age` stay hidden); otherwise the
+local clock is trusted, and a timing that cannot be right is ignored. Feeds that send no
+`Last-Modified` are polled every `intervalMs`, as is any poll after an error, and
+`adaptive: false` always.
 
 Limits: updates for trips the timetable does not contain (added trips) are ignored;
 only trip updates are read, not alerts or vehicle positions; and a train's delay is
@@ -482,7 +498,7 @@ design, arrivals beyond the planner's adaptive window) and timings: first reques
 and repeat for both, plus the planner's one-off start-up. API results include
 realtime delays and cancellations from iRail's own sources, planner results from
 the NMBS/SNCB GTFS Realtime feed, so small differences are possible and each
-carries a reason. The page checks the feed every 30 seconds and, when it changes,
+carries a reason. The page checks the feed as soon as a new copy is due (about every 30 seconds) and, when it changes,
 asks both sides again and redraws the results in place (open journeys stay open);
 **Check now** does so on demand and the checkbox switches it off. Stations are matched through
 their NMBS station number. The station search works like irail.be's: it finds

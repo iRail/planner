@@ -458,7 +458,7 @@ const connections = await planner.connections({
           Real-time delays, cancellations, skipped stops and platforms from a
           GTFS Realtime feed named in the manifest are applied while
           connections are read;
-          <code>planner.watchRealtime()</code> polls it every 30 seconds and
+          <code>planner.watchRealtime()</code> polls it when a new copy is due (about every 30 seconds) and
           emits <code>update</code> when it changes. Trains that split or join
           (in-seat transfers, type 4) are followed without a transfer; shapes
           are not implemented and transfer overrides between
